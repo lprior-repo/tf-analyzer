@@ -1,0 +1,190 @@
+version: '3'
+
+vars:
+  GOLANGCI_LINT_VERSION: v1.55.2
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # Build targets
+  build:
+    desc: Build the application
+    cmds:
+      - echo "Building tf-analyzer..."
+      - go build -ldflags="-s -w"
+
+  build-race:
+    desc: Build with race detector
+    cmds:
+      - echo "Building with race detector..."
+      - go build -race -o bin/tf-analyzer-race .
+
+  # Development targets
+  run:
+    desc: Run the application
+    cmds:
+      - echo "Running tf-analyzer..."
+      - go run .
+
+  dev:
+    desc: Run with live reload (requires air)
+    deps: [install-air]
+    cmds:
+      - echo "Starting development server..."
+      - air
+
+  # Testing targets
+  test:
+    desc: Run tests
+    cmds:
+      - echo "Running tests..."
+      - go test -v ./...
+
+  test-race:
+    desc: Run tests with race detector
+    cmds:
+      - echo "Running tests with race detector..."
+      - go test -race -v ./...
+
+  test-short:
+    desc: Run short tests only
+    cmds:
+      - echo "Running short tests..."
+      - go test -short -v ./...
+
+  coverage:
+    desc: Generate test coverage report
+    cmds:
+      - echo "Generating coverage report..."
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo "Coverage report generated{{":"}} coverage.html"
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - echo "Running benchmarks..."
+      - go test -bench=. -benchmem ./...
+
+  # Code quality targets
+  lint:
+    desc: Run golangci-lint
+    deps: [install-golangci-lint]
+    cmds:
+      - echo "Running golangci-lint..."
+      - golangci-lint run
+
+  lint-fix:
+    desc: Run golangci-lint with auto-fix
+    deps: [install-golangci-lint]
+    cmds:
+      - echo "Running golangci-lint with auto-fix..."
+      - golangci-lint run --fix
+
+  fmt:
+    desc: Format code
+    cmds:
+      - echo "Formatting code..."
+      - go fmt ./...
+
+  # Tool installation
+  install-tools:
+    desc: Install all development tools
+    deps: [install-golangci-lint, install-air]
+
+  install-golangci-lint:
+    desc: Install golangci-lint
+    status:
+      - which golangci-lint
+    cmds:
+      - echo "Installing golangci-lint..."
+      - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin {{.GOLANGCI_LINT_VERSION}}
+
+  install-air:
+    desc: Install air for live reload
+    status:
+      - which air
+    cmds:
+      - echo "Installing air..."
+      - go install github.com/air-verse/air@latest
+
+  # Dependency management
+  deps:
+    desc: Download dependencies
+    cmds:
+      - echo "Downloading dependencies..."
+      - go mod download
+
+  deps-tidy:
+    desc: Tidy up dependencies
+    cmds:
+      - echo "Tidying dependencies..."
+      - go mod tidy
+
+  deps-verify:
+    desc: Verify dependencies
+    cmds:
+      - echo "Verifying dependencies..."
+      - go mod verify
+
+  # Cleanup
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - echo "Cleaning up..."
+      - rm -rf bin/ dist/ tmp/ coverage.out coverage.html
+
+  # CI targets
+  ci:
+    desc: Run CI pipeline (lint + test)
+    deps: [deps]
+    cmds:
+      - task: lint
+      - task: test
+
+  ci-full:
+    desc: Run full CI pipeline
+    deps: [deps]
+    cmds:
+      - task: lint
+      - task: test-race
+      - task: coverage
+
+  # Security
+  sec:
+    desc: Run security checks (requires gosec)
+    cmds:
+      - |
+        if ! which gosec > /dev/null; then
+          go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        fi
+      - echo "Running security checks..."
+      - gosec ./...
+
+  # Initialize project
+  init:
+    desc: Initialize go module and install tools
+    cmds:
+      - echo "Initializing project..."
+      - |
+        if [ ! -f go.mod ]; then
+          go mod init tf-analyzer
+        fi
+      - task: install-tools
+      - task: deps
+
+  # Performance profiling
+  profile-cpu:
+    desc: Run CPU profiling
+    cmds:
+      - echo "Running CPU profiling..."
+      - go test -cpuprofile=cpu.prof -bench=. ./...
+
+  profile-mem:
+    desc: Run memory profiling
+    cmds:
+      - echo "Running memory profiling..."
+      - go test -memprofile=mem.prof -bench=. ./...

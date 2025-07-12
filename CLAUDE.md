@@ -67,6 +67,10 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 - `MAX_CONCURRENT_CLONES` - Concurrent repository cloning limit
 - `MAX_CONCURRENT_ANALYZERS` - Concurrent file analysis limit
 - `ANALYZE_EXTENSIONS` - File types to analyze (.md,.tf,.tfvars,.hcl)
+- `GHORG_RECLONE_CONFIG` - Path to ghorg reclone configuration file (default: ~/.config/ghorg/reclone.yaml)
+- `GHORG_CRON_TIMER_MINUTES` - Interval for automated reclone operations (default: 60 minutes)
+- `GHORG_BASE_DIRECTORY` - Base directory for cloned repositories
+- `GHORG_SCM_TYPE` - Source control management type (github, gitlab, gitea, etc.)
 
 ### Code Quality Enforcement
 - golangci-lint configured with cyclomatic complexity limit of 8
@@ -81,6 +85,8 @@ The project emphasizes avoiding OOP patterns in favor of simple, stateless funct
 This guide explores functional programming (FP) principles in Go, focusing on practical application over theoretical purity. The goal is to leverage FP concepts to write clear, maintainable, and highly testable Go code by treating functions as first-class citizens and creating clean separation between logic and side effects.
 
 Modern Go development often relies on the `github.com/samber/lo` library for common functional patterns like `Map`, `Filter`, and `Reduce`.
+
+For system operations, file handling, and command execution, this project uses the `github.com/bitfield/script` library, which provides a shell-like pipeline API for Go programs.
 
 ### Architectural Pattern: Data, Calculations, and Actions
 
@@ -131,3 +137,83 @@ Contain side effects by pushing impure operations to program edges. Create wrapp
 1. Actions get data from external world
 2. Pass data to pure Calculations
 3. Use results in final Actions for I/O operations
+
+## ghorg Integration
+
+This project integrates with [ghorg](https://github.com/gabrie30/ghorg) for efficient repository cloning and management.
+
+### ghorg reclone Command
+
+The `ghorg reclone` command provides centralized configuration management for multiple repository cloning operations:
+
+#### Key Features
+- **Configuration-driven**: Uses `reclone.yaml` stored in `$HOME/.config/ghorg`
+- **Batch operations**: Clone multiple organizations/repositories with a single command
+- **Post-execution scripts**: Run custom scripts after successful/failed clones
+- **Selective execution**: Target specific reclone configurations by name
+
+#### Usage Examples
+```bash
+# Clone all configured entries
+ghorg reclone
+
+# Clone specific entries only
+ghorg reclone kubernetes-sig-staging kubernetes-sig
+
+# List all configured commands
+ghorg reclone --list
+
+# Start HTTP server for remote triggering
+ghorg reclone-server
+
+# Set up automated cloning with cron
+ghorg reclone-cron
+```
+
+#### Configuration Format
+```yaml
+# ~/.config/ghorg/reclone.yaml
+gitlab-examples:
+  cmd: "ghorg clone gitlab-examples --scm=gitlab --token=XXXXXXX"
+  description: "Clone GitLab example repositories"
+  post_exec_script: "/path/to/notify.sh"
+
+kubernetes-sig:
+  cmd: "ghorg clone kubernetes-sigs --scm=github --token=$GITHUB_TOKEN"
+  description: "Clone Kubernetes SIG repositories"
+```
+
+#### Integration Benefits
+- **Consistency**: Standardized cloning across different SCM providers
+- **Automation**: Scheduled repository updates via cron integration
+- **Monitoring**: Post-execution scripts for logging and notifications
+- **Flexibility**: Support for GitHub, GitLab, Gitea, and other SCM platforms
+
+## Required Dependencies
+
+This project requires the following Go libraries:
+
+### Core Libraries
+- `github.com/samber/lo` - Functional programming utilities (Map, Filter, Reduce)
+- `github.com/bitfield/script` - Shell-like operations and file handling
+- `github.com/panjf2000/ants/v2` - High-performance goroutine pool
+- `github.com/sourcegraph/conc` - Structured concurrency utilities
+- `github.com/joho/godotenv` - Environment variable loading
+
+### Script Library Usage
+The `script` library replaces standard library operations for:
+- File reading/writing: `script.File(path).Bytes()` instead of `os.ReadFile`
+- Command execution: `script.Exec(cmd)` instead of `exec.Command`
+- Text processing: Built-in pipeline operations like `Match`, `Filter`, `Replace`
+- HTTP requests: `script.Get(url)` and `script.Post(url)` for web operations
+
+### Installation
+```bash
+go get github.com/bitfield/script
+go get github.com/samber/lo
+go get github.com/panjf2000/ants/v2
+go get github.com/sourcegraph/conc
+go get github.com/joho/godotenv
+```
+
+All libraries should be imported and used consistently across the codebase to maintain compatibility and leverage their performance optimizations.
