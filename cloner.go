@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -83,9 +84,6 @@ func createAbsolutePath(path string) (string, error) {
 	return filepath.Abs(expandedPath)
 }
 
-func createTempDirectory() (string, error) {
-	return createTempDirectoryWithRecovery(slog.Default())
-}
 
 func createTempDirectoryWithRecovery(logger *slog.Logger) (string, error) {
 	baseDir := "~/src/gh-repos-clone"
@@ -111,25 +109,57 @@ func createTempDirectoryWithRecovery(logger *slog.Logger) (string, error) {
 	return tempDir, nil
 }
 
-func removeTempDirectory(path string) error {
-	return removeTempDirectoryWithRecovery(path, slog.Default())
-}
 
 func removeTempDirectoryWithRecovery(path string, logger *slog.Logger) error {
 	if path == "" {
 		return nil
 	}
 	
-	logger.Debug("Removing temp directory", "path", path)
+	logger.Info("Starting comprehensive cleanup of temp directory", "path", path)
 	
-	err := os.RemoveAll(path)
-	if err != nil {
-		logger.Warn("Failed to remove temp directory", "path", path, "error", err)
-		return err
+	// Force removal with multiple attempts
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		err := os.RemoveAll(path)
+		if err == nil {
+			logger.Info("Temp directory removed successfully", "path", path, "attempt", attempt)
+			return nil
+		}
+		
+		lastErr = err
+		logger.Warn("Failed to remove temp directory, retrying", 
+			"path", path, 
+			"attempt", attempt, 
+			"error", err)
+		
+		// Wait before retry
+		time.Sleep(time.Duration(attempt) * time.Second)
+		
+		// Try to force permissions on retry
+		if attempt > 1 {
+			if chmodErr := makeDirectoryWritable(path, logger); chmodErr != nil {
+				logger.Debug("Failed to make directory writable", "path", path, "error", chmodErr)
+			}
+		}
 	}
 	
-	logger.Debug("Temp directory removed successfully", "path", path)
-	return nil
+	logger.Error("Failed to remove temp directory after all attempts", "path", path, "error", lastErr)
+	return lastErr
+}
+
+func makeDirectoryWritable(path string, logger *slog.Logger) error {
+	return filepath.WalkDir(path, func(walkPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // Continue walking despite errors
+		}
+		
+		// Make directories and files writable
+		if chmodErr := os.Chmod(walkPath, 0755); chmodErr != nil {
+			logger.Debug("Failed to chmod path", "path", walkPath, "error", chmodErr)
+		}
+		
+		return nil
+	})
 }
 
 func findOrgDirectory(tempDir string) (string, error) {
@@ -147,9 +177,6 @@ func findOrgDirectory(tempDir string) (string, error) {
 	return "", fmt.Errorf("no org directory found in %s", tempDir)
 }
 
-func executeCloneCommand(ctx context.Context, op CloneOperation) error {
-	return executeCloneCommandWithRecovery(ctx, op, slog.Default())
-}
 
 func executeCloneCommandWithRecovery(ctx context.Context, op CloneOperation, logger *slog.Logger) error {
 	cmd := buildGhorgCommand(ctx, op)
@@ -176,9 +203,6 @@ func executeCloneCommandWithRecovery(ctx context.Context, op CloneOperation, log
 	return nil
 }
 
-func setupWorkspace() (string, func(), error) {
-	return setupWorkspaceWithRecovery(slog.Default())
-}
 
 func setupWorkspaceWithRecovery(logger *slog.Logger) (string, func(), error) {
 	tempDir, err := createTempDirectoryWithRecovery(logger)
@@ -197,9 +221,6 @@ func setupWorkspaceWithRecovery(logger *slog.Logger) (string, func(), error) {
 	return tempDir, cleanup, nil
 }
 
-func executeClonePhase(ctx context.Context, operation CloneOperation) error {
-	return executeClonePhaseWithRecovery(ctx, operation, slog.Default())
-}
 
 func executeClonePhaseWithRecovery(ctx context.Context, operation CloneOperation, logger *slog.Logger) error {
 	logger.Info("Starting clone operation", 

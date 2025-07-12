@@ -319,10 +319,6 @@ func loadFileContent(path string) ([]byte, error) {
 	return script.File(path).Bytes()
 }
 
-func analyzeRepository(repoPath string) RepositoryAnalysis {
-	analysis, _ := analyzeRepositoryWithRecovery(repoPath, slog.Default())
-	return analysis
-}
 
 func analyzeRepositoryWithRecovery(repoPath string, logger *slog.Logger) (RepositoryAnalysis, error) {
 	var allProviders []ProviderDetail
@@ -510,9 +506,6 @@ func parseOutputsSafely(content string, logger *slog.Logger) []string {
 	return parseOutputs(content)
 }
 
-func processRepositoryFiles(repo Repository) AnalysisResult {
-	return processRepositoryFilesWithRecovery(repo, slog.Default())
-}
 
 func processRepositoryFilesWithRecovery(repo Repository, logger *slog.Logger) AnalysisResult {
 	repoLogger := logger.With("repository", repo.Name, "organization", repo.Organization)

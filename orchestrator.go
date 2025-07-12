@@ -148,13 +148,6 @@ func logError(err error) {
 	slog.Error("operation failed", "error", err)
 }
 
-func logWarning(message string, args ...interface{}) {
-	slog.Warn(fmt.Sprintf(message, args...))
-}
-
-func logDebug(message string, args ...interface{}) {
-	slog.Debug(fmt.Sprintf(message, args...))
-}
 
 func createProcessingContext(config Config) (ProcessingContext, error) {
 	validationErr := validateConfig(config)
@@ -199,11 +192,55 @@ func discoverRepositories(tempDir, org string) ([]Repository, error) {
 	return repositories, nil
 }
 
-func createJobSubmitter(pool *ants.Pool) func(Repository) AnalysisResult {
-	return createJobSubmitterWithRecovery(pool, slog.Default())
+
+func createResultChannel(repositories []Repository) chan AnalysisResult {
+	return make(chan AnalysisResult, len(repositories))
 }
 
-func createJobSubmitterWithRecovery(pool *ants.Pool, logger *slog.Logger) func(Repository) AnalysisResult {
+func configureWaitGroup(maxGoroutines int) *pool.Pool {
+	return pool.New().WithMaxGoroutines(maxGoroutines)
+}
+
+
+func submitRepositoryJobsWithTimeout(repositories []Repository, ctx context.Context, p *pool.Pool, antsPool *ants.Pool, results chan AnalysisResult, logger *slog.Logger) {
+	jobSubmitter := createJobSubmitterWithTimeoutRecovery(antsPool, logger)
+
+	for _, repo := range repositories {
+		repo := repo
+		p.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("Repository processing panic recovered", 
+						"repository", repo.Name, 
+						"organization", repo.Organization, 
+						"panic", r)
+					results <- AnalysisResult{
+						RepoName:     repo.Name,
+						Organization: repo.Organization,
+						Error:        fmt.Errorf("panic during processing: %v", r),
+					}
+				}
+			}()
+			
+			// Check context before processing
+			select {
+			case <-ctx.Done():
+				results <- AnalysisResult{
+					RepoName:     repo.Name,
+					Organization: repo.Organization,
+					Error:        fmt.Errorf("processing cancelled due to timeout: %v", ctx.Err()),
+				}
+				return
+			default:
+			}
+			
+			result := jobSubmitter(repo)
+			results <- result
+		})
+	}
+}
+
+func createJobSubmitterWithTimeoutRecovery(pool *ants.Pool, logger *slog.Logger) func(Repository) AnalysisResult {
 	return func(repo Repository) AnalysisResult {
 		repoLogger := logger.With("repository", repo.Name, "organization", repo.Organization)
 		
@@ -224,51 +261,12 @@ func createJobSubmitterWithRecovery(pool *ants.Pool, logger *slog.Logger) func(R
 	}
 }
 
-func createResultChannel(repositories []Repository) chan AnalysisResult {
-	return make(chan AnalysisResult, len(repositories))
-}
-
-func configureWaitGroup(maxGoroutines int) *pool.Pool {
-	return pool.New().WithMaxGoroutines(maxGoroutines)
-}
-
-func submitRepositoryJobs(repositories []Repository, p *pool.Pool, antsPool *ants.Pool, results chan AnalysisResult) {
-	submitRepositoryJobsWithRecovery(repositories, p, antsPool, results, slog.Default())
-}
-
-func submitRepositoryJobsWithRecovery(repositories []Repository, p *pool.Pool, antsPool *ants.Pool, results chan AnalysisResult, logger *slog.Logger) {
-	jobSubmitter := createJobSubmitterWithRecovery(antsPool, logger)
-
-	for _, repo := range repositories {
-		repo := repo
-		p.Go(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Error("Repository processing panic recovered", 
-						"repository", repo.Name, 
-						"organization", repo.Organization, 
-						"panic", r)
-					results <- AnalysisResult{
-						RepoName:     repo.Name,
-						Organization: repo.Organization,
-						Error:        fmt.Errorf("panic during processing: %v", r),
-					}
-				}
-			}()
-			result := jobSubmitter(repo)
-			results <- result
-		})
-	}
-}
 
 func waitAndCloseChannel(p *pool.Pool, results chan AnalysisResult) {
 	p.Wait()
 	close(results)
 }
 
-func logRepositoryResult(result AnalysisResult) {
-	logRepositoryResultStructured(result, slog.Default())
-}
 
 func logRepositoryResultStructured(result AnalysisResult, logger *slog.Logger) {
 	if result.Error != nil {
@@ -290,19 +288,6 @@ func logRepositoryResultStructured(result AnalysisResult, logger *slog.Logger) {
 		"outputs", analysis.OutputAnalysis.OutputCount)
 }
 
-func shouldLogProgress(currentCount int) bool {
-	return currentCount%50 == 0
-}
-
-func logProgressIfNeeded(currentCount int) {
-	if shouldLogProgress(currentCount) {
-		logProgress("Processed %d repositories...", currentCount)
-	}
-}
-
-func collectResults(results chan AnalysisResult) []AnalysisResult {
-	return collectResultsWithRecovery(results, slog.Default())
-}
 
 func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger) []AnalysisResult {
 	var allResults []AnalysisResult
@@ -375,19 +360,28 @@ func finalizeProcessing(allResults []AnalysisResult, startTime time.Time) {
 	logStats(stats)
 }
 
-func processRepositoriesConcurrently(repositories []Repository, ctx ProcessingContext) []AnalysisResult {
-	return processRepositoriesConcurrentlyWithRecovery(repositories, ctx, slog.Default())
-}
 
-func processRepositoriesConcurrentlyWithRecovery(repositories []Repository, ctx ProcessingContext, logger *slog.Logger) []AnalysisResult {
+func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx context.Context, processingCtx ProcessingContext, logger *slog.Logger) []AnalysisResult {
 	startTime := time.Now()
 
-	logger.Info("Starting concurrent repository processing", "repository_count", len(repositories))
+	logger.Info("Starting concurrent repository processing with timeout", 
+		"repository_count", len(repositories),
+		"timeout", processingCtx.Config.ProcessTimeout)
 
-	p := configureWaitGroup(ctx.Config.MaxGoroutines)
+	p := configureWaitGroup(processingCtx.Config.MaxGoroutines)
 	results := createResultChannel(repositories)
 
-	submitRepositoryJobsWithRecovery(repositories, p, ctx.Pool, results, logger)
+	// Monitor context cancellation
+	go func() {
+		<-ctx.Done()
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Warn("Repository processing timeout reached", 
+				"timeout", processingCtx.Config.ProcessTimeout,
+				"elapsed", time.Since(startTime))
+		}
+	}()
+
+	submitRepositoryJobsWithTimeout(repositories, ctx, p, processingCtx.Pool, results, logger)
 	waitAndCloseChannel(p, results)
 
 	allResults := collectResultsWithRecovery(results, logger)
@@ -395,6 +389,7 @@ func processRepositoriesConcurrentlyWithRecovery(repositories []Repository, ctx 
 
 	return allResults
 }
+
 
 func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingContext, reporter *Reporter) error {
 	startTime := time.Now()
@@ -440,7 +435,7 @@ func processOrganizationWithRecovery(ctx context.Context, org string, processing
 
 	// Workspace setup with retry
 	for attempt := 1; attempt <= 3; attempt++ {
-		tempDir, cleanup, setupErr = setupWorkspace()
+		tempDir, cleanup, setupErr = setupWorkspaceWithRecovery(logger)
 		if setupErr == nil {
 			break
 		}
@@ -450,13 +445,17 @@ func processOrganizationWithRecovery(ctx context.Context, org string, processing
 	if setupErr != nil {
 		return fmt.Errorf("failed to setup workspace after 3 attempts: %w", setupErr)
 	}
-	defer cleanup()
+	defer func() {
+		logger.Info("Starting cleanup of repositories", "temp_dir", tempDir, "organization", org)
+		cleanup()
+		logger.Info("Cleanup completed", "temp_dir", tempDir, "organization", org)
+	}()
 
 	// Clone with retry
 	operation := createCloneOperation(org, tempDir, processingCtx.Config)
 	var cloneErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		cloneErr = executeClonePhase(ctx, operation)
+		cloneErr = executeClonePhaseWithRecovery(ctx, operation, logger)
 		if cloneErr == nil {
 			break
 		}
@@ -473,8 +472,11 @@ func processOrganizationWithRecovery(ctx context.Context, org string, processing
 		return fmt.Errorf("failed to discover repositories: %w", discoveryErr)
 	}
 
-	// Process repositories with error recovery
-	results := processRepositoriesConcurrentlyWithRecovery(repositories, processingCtx, logger)
+	// Process repositories with error recovery and context timeout
+	analysisCtx, analysisCancel := context.WithTimeout(ctx, processingCtx.Config.ProcessTimeout)
+	defer analysisCancel()
+	
+	results := processRepositoriesConcurrentlyWithTimeout(repositories, analysisCtx, processingCtx, logger)
 	reporter.AddResults(results)
 
 	logger.Info("Organization processing completed", "repositories_found", len(repositories))
