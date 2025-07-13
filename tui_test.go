@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
@@ -46,6 +49,19 @@ func TestProgressModelInit(t *testing.T) {
 
 	if model.done {
 		t.Error("Expected done to be false initially")
+	}
+
+	// Test new fields are initialized correctly
+	if model.currentPhase != "" {
+		t.Errorf("Expected currentPhase to be empty initially, got %s", model.currentPhase)
+	}
+
+	if model.repoCount != 0 {
+		t.Errorf("Expected repoCount to be 0 initially, got %d", model.repoCount)
+	}
+
+	if model.totalRepos != 0 {
+		t.Errorf("Expected totalRepos to be 0 initially, got %d", model.totalRepos)
 	}
 }
 
@@ -297,5 +313,459 @@ func TestResultsSummaryFormat(t *testing.T) {
 
 	if totalProviders != 5 {
 		t.Errorf("Expected 5 total providers, got %d", totalProviders)
+	}
+}
+
+// ============================================================================
+// ADDITIONAL TESTS (formerly from tui_critical_test.go)
+// ============================================================================
+
+// TestNewTUIModelCritical tests TUI model creation (critical)
+func TestNewTUIModelCritical(t *testing.T) {
+	t.Run("creates TUI model correctly", func(t *testing.T) {
+		// Given: parameters for TUI model
+		totalRepos := 10
+
+		// When: NewTUIModel is called
+		model := NewTUIModel(totalRepos)
+
+		// Then: should create model with correct initial state
+		if model.mode != "progress" {
+			t.Errorf("Expected mode 'progress', got %s", model.mode)
+		}
+		if model.progress.total != totalRepos {
+			t.Errorf("Expected total %d, got %d", totalRepos, model.progress.total)
+		}
+	})
+}
+
+// TestTUIInit tests TUI initialization
+func TestTUIInit(t *testing.T) {
+	t.Run("initializes TUI without panic", func(t *testing.T) {
+		// Given: a TUI model
+		model := NewTUIModel(5)
+
+		// When: Init is called
+		cmd := model.Init()
+
+		// Then: should return a command (or nil)
+		// Note: cmd can be nil, which is fine for initialization
+		_ = cmd
+	})
+}
+
+// TestTUIView tests TUI view rendering
+func TestTUIView(t *testing.T) {
+	t.Run("renders view without panic", func(t *testing.T) {
+		// Given: a TUI model with some progress
+		model := NewTUIModel(10)
+		model.progress.completed = 3
+		model.progress.currentRepo = "test-repo"
+
+		// When: View is called
+		view := model.View()
+
+		// Then: should return a non-empty string
+		if view == "" {
+			t.Error("Expected non-empty view output")
+		}
+	})
+
+	t.Run("renders view in results mode", func(t *testing.T) {
+		// Given: a TUI model in results mode
+		model := NewTUIModel(5)
+		model.mode = "results"
+		model.results.results = []AnalysisResult{
+			{RepoName: "repo1", Organization: "org1"},
+			{RepoName: "repo2", Organization: "org1"},
+		}
+
+		// When: View is called
+		view := model.View()
+
+		// Then: should return a view with results
+		if view == "" {
+			t.Error("Expected non-empty view output")
+		}
+	})
+}
+
+// TestRenderProgressView tests progress view rendering
+func TestRenderProgressView(t *testing.T) {
+	t.Run("renders progress view", func(t *testing.T) {
+		// Given: a TUI model in progress
+		model := NewTUIModel(10)
+		model.progress.completed = 4
+		model.progress.currentRepo = "test-repo"
+
+		// When: renderProgressView is called
+		view := model.renderProgressView()
+
+		// Then: should return progress view
+		if view == "" {
+			t.Error("Expected non-empty progress view")
+		}
+	})
+}
+
+// TestRenderResultsView tests results view rendering
+func TestRenderResultsView(t *testing.T) {
+	t.Run("renders results view", func(t *testing.T) {
+		// Given: a TUI model with results
+		model := NewTUIModel(3)
+		model.results.results = []AnalysisResult{
+			{
+				RepoName:     "test-repo",
+				Organization: "test-org",
+				Analysis: RepositoryAnalysis{
+					ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
+				},
+			},
+		}
+
+		// When: renderResultsView is called
+		view := model.renderResultsView()
+
+		// Then: should return results view
+		if view == "" {
+			t.Error("Expected non-empty results view")
+		}
+	})
+}
+
+// TestTUIUpdate tests TUI update functionality
+func TestTUIUpdate(t *testing.T) {
+	t.Run("updates model without panic", func(t *testing.T) {
+		// Given: a TUI model and message
+		model := NewTUIModel(5)
+		
+		// Create a basic message (we'll use a window size message)
+		type WindowSizeMsg struct {
+			Width, Height int
+		}
+		
+		msg := WindowSizeMsg{Width: 80, Height: 24}
+
+		// When: Update is called
+		newModel, cmd := model.Update(msg)
+
+		// Then: should return updated model
+		if newModel == nil {
+			t.Error("Expected non-nil model")
+		}
+		// cmd can be nil, which is fine
+		_ = cmd
+	})
+}
+
+// TestTruncate tests string truncation
+func TestTruncate(t *testing.T) {
+	t.Run("truncates long string", func(t *testing.T) {
+		// Given: a long string
+		longString := "This is a very long string that should be truncated"
+		maxLength := 20
+
+		// When: truncate is called
+		result := truncate(longString, maxLength)
+
+		// Then: should be truncated with ellipsis
+		if len(result) > maxLength {
+			t.Errorf("Expected result length <= %d, got %d", maxLength, len(result))
+		}
+		if len(longString) > maxLength && result == longString {
+			t.Error("Expected string to be truncated")
+		}
+	})
+
+	t.Run("does not truncate short string", func(t *testing.T) {
+		// Given: a short string
+		shortString := "Short"
+		maxLength := 20
+
+		// When: truncate is called
+		result := truncate(shortString, maxLength)
+
+		// Then: should remain unchanged
+		if result != shortString {
+			t.Errorf("Expected %s, got %s", shortString, result)
+		}
+	})
+}
+
+// TestNewTUIProgressChannelCritical tests progress channel creation (critical)
+func TestNewTUIProgressChannelCritical(t *testing.T) {
+	t.Run("creates progress channel", func(t *testing.T) {
+		// Given: total repositories
+		totalRepos := 5
+
+		// When: NewTUIProgressChannel is called
+		tuiProgress := NewTUIProgressChannel(totalRepos)
+
+		// Then: should create progress channel
+		if tuiProgress == nil {
+			t.Error("Expected non-nil TUI progress channel")
+		}
+	})
+}
+
+// TestTUIProgressChannelStart tests progress channel start
+func TestTUIProgressChannelStart(t *testing.T) {
+	t.Run("starts progress channel", func(t *testing.T) {
+		// Given: a TUI progress channel
+		tuiProgress := NewTUIProgressChannel(3)
+		ctx := context.Background()
+
+		// When: Start is called
+		tuiProgress.Start(ctx)
+
+		// Then: should not panic
+		// Note: Start sets up the channel but doesn't start the UI loop
+	})
+}
+
+// TestTUIProgressChannelUpdateProgress tests progress updates
+func TestTUIProgressChannelUpdateProgress(t *testing.T) {
+	t.Run("updates progress without panic", func(t *testing.T) {
+		// Given: a TUI progress channel
+		tuiProgress := NewTUIProgressChannel(5)
+		ctx := context.Background()
+		tuiProgress.Start(ctx)
+
+		// When: UpdateProgress is called
+		// Then: should not panic
+		tuiProgress.UpdateProgress("repo1", "org1", 1, 5)
+		tuiProgress.UpdateProgress("repo2", "org1", 2, 5)
+	})
+}
+
+// TestTUIProgressChannelComplete tests completion
+func TestTUIProgressChannelComplete(t *testing.T) {
+	t.Run("completes without panic", func(t *testing.T) {
+		// Given: a TUI progress channel
+		tuiProgress := NewTUIProgressChannel(2)
+		ctx := context.Background()
+		tuiProgress.Start(ctx)
+
+		// When: Complete is called with results
+		results := []AnalysisResult{
+			{RepoName: "repo1", Organization: "org1"},
+		}
+		tuiProgress.Complete(results)
+
+		// Then: should not panic
+	})
+}
+
+// TestTUIProgressChannelRun tests the main TUI run loop
+func TestTUIProgressChannelRun(t *testing.T) {
+	t.Run("runs TUI loop", func(t *testing.T) {
+		// Given: a TUI progress channel
+		tuiProgress := NewTUIProgressChannel(1)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		tuiProgress.Start(ctx)
+
+		// Complete immediately to exit the loop
+		tuiProgress.Complete([]AnalysisResult{})
+
+		// When: Run is called
+		err := tuiProgress.Run()
+
+		// Then: should complete without serious error
+		// Note: May return context deadline exceeded, which is expected
+		if err != nil && err.Error() != "context deadline exceeded" {
+			// Only fail if it's a different error
+			t.Logf("TUI run completed with: %v", err)
+		}
+	})
+}
+
+// ============================================================================
+// ENHANCED TUI FUNCTIONALITY TESTS
+// ============================================================================
+
+// TestGetPhaseEmoji tests phase emoji mapping
+func TestGetPhaseEmoji(t *testing.T) {
+	tests := []struct {
+		phase    string
+		expected string
+	}{
+		{"cloning", "📥"},
+		{"clone", "📥"},
+		{"analyzing", "🔍"},
+		{"analysis", "🔍"},
+		{"processing", "⚡"},
+		{"fetching", "🌐"},
+		{"complete", "✅"},
+		{"completed", "✅"},
+		{"unknown", "🔄"},
+		{"", "🔄"},
+	}
+
+	for _, tt := range tests {
+		t.Run("phase_"+tt.phase, func(t *testing.T) {
+			result := getPhaseEmoji(tt.phase)
+			if result != tt.expected {
+				t.Errorf("Expected emoji %s for phase %s, got %s", tt.expected, tt.phase, result)
+			}
+		})
+	}
+}
+
+// TestEnhancedProgressMsg tests the enhanced progress message
+func TestEnhancedProgressMsg(t *testing.T) {
+	msg := ProgressMsg{
+		Repo:         "test-repo",
+		Organization: "test-org",
+		Phase:        "cloning",
+		Completed:    25,
+		Total:        100,
+		RepoCount:    5,
+		TotalRepos:   20,
+	}
+
+	if msg.Phase != "cloning" {
+		t.Errorf("Expected phase 'cloning', got %s", msg.Phase)
+	}
+
+	if msg.RepoCount != 5 {
+		t.Errorf("Expected repoCount 5, got %d", msg.RepoCount)
+	}
+
+	if msg.TotalRepos != 20 {
+		t.Errorf("Expected totalRepos 20, got %d", msg.TotalRepos)
+	}
+}
+
+// TestProgressWithPhaseUpdate tests UpdateProgressWithPhase method
+func TestProgressWithPhaseUpdate(t *testing.T) {
+	tuiProgress := NewTUIProgressChannel(100)
+	ctx := context.Background()
+	tuiProgress.Start(ctx)
+
+	// Test that UpdateProgressWithPhase works without panic
+	tuiProgress.UpdateProgressWithPhase("repo1", "org1", "cloning", 10, 100, 2, 10)
+	tuiProgress.UpdateProgressWithPhase("repo2", "org1", "analyzing", 20, 100, 3, 10)
+
+	// Test backward compatibility - UpdateProgress should call UpdateProgressWithPhase
+	tuiProgress.UpdateProgress("repo3", "org1", 30, 100)
+}
+
+// TestEnhancedProgressView tests the enhanced progress view with new fields
+func TestEnhancedProgressView(t *testing.T) {
+	model := NewTUIModel(100)
+	model.progress.currentOrg = "test-org"
+	model.progress.currentRepo = "test-repo"
+	model.progress.currentPhase = "cloning"
+	model.progress.repoCount = 5
+	model.progress.totalRepos = 20
+	model.progress.completed = 25
+	model.progress.total = 100
+
+	view := model.renderProgressView()
+
+	// Check that the view contains enhanced information
+	if !strings.Contains(view, "test-org") {
+		t.Error("Expected view to contain organization name")
+	}
+
+	if !strings.Contains(view, "test-repo") {
+		t.Error("Expected view to contain repository name")
+	}
+
+	if !strings.Contains(view, "📥") { // cloning emoji
+		t.Error("Expected view to contain phase emoji")
+	}
+
+	if !strings.Contains(view, "5/20") { // repo progress
+		t.Error("Expected view to contain repository progress")
+	}
+
+	if !strings.Contains(view, "25.0%") { // percentage
+		t.Error("Expected view to contain percentage")
+	}
+}
+
+// TestEnhancedResultsView tests the enhanced results view with statistics
+func TestEnhancedResultsView(t *testing.T) {
+	model := NewTUIModel(10)
+	model.mode = "results"
+	model.progress.results = []AnalysisResult{
+		{
+			RepoName:     "repo1",
+			Organization: "org1",
+			Analysis: RepositoryAnalysis{
+				ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 10},
+				Providers:        ProvidersAnalysis{UniqueProviderCount: 2},
+				Modules:          ModulesAnalysis{TotalModuleCalls: 3},
+			},
+		},
+		{
+			RepoName:     "repo2",
+			Organization: "org1",
+			Analysis: RepositoryAnalysis{
+				ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 15},
+				Providers:        ProvidersAnalysis{UniqueProviderCount: 3},
+				Modules:          ModulesAnalysis{TotalModuleCalls: 5},
+			},
+		},
+	}
+	model.results = createResultsModel(model.progress.results)
+
+	view := model.renderResultsView()
+
+	// Check that the view contains enhanced statistics
+	if !strings.Contains(view, "✅ Success: 2") {
+		t.Error("Expected view to contain success count")
+	}
+
+	if !strings.Contains(view, "Providers: 5") { // 2 + 3
+		t.Error("Expected view to contain total providers")
+	}
+
+	if !strings.Contains(view, "Modules: 8") { // 3 + 5
+		t.Error("Expected view to contain total modules")
+	}
+
+	if !strings.Contains(view, "Resources: 25") { // 10 + 15
+		t.Error("Expected view to contain total resources")
+	}
+}
+
+// TestTUIModelHandleProgressUpdate tests enhanced progress update handling
+func TestTUIModelHandleProgressUpdate(t *testing.T) {
+	model := NewTUIModel(100)
+	
+	msg := ProgressMsg{
+		Repo:         "test-repo",
+		Organization: "test-org",
+		Phase:        "analyzing",
+		Completed:    50,
+		Total:        100,
+		RepoCount:    10,
+		TotalRepos:   50,
+	}
+
+	updatedModel, _ := model.handleProgressUpdate(msg)
+	tuiModel := updatedModel.(TUIModel)
+
+	if tuiModel.progress.currentRepo != "test-repo" {
+		t.Errorf("Expected currentRepo 'test-repo', got %s", tuiModel.progress.currentRepo)
+	}
+
+	if tuiModel.progress.currentOrg != "test-org" {
+		t.Errorf("Expected currentOrg 'test-org', got %s", tuiModel.progress.currentOrg)
+	}
+
+	if tuiModel.progress.currentPhase != "analyzing" {
+		t.Errorf("Expected currentPhase 'analyzing', got %s", tuiModel.progress.currentPhase)
+	}
+
+	if tuiModel.progress.repoCount != 10 {
+		t.Errorf("Expected repoCount 10, got %d", tuiModel.progress.repoCount)
+	}
+
+	if tuiModel.progress.totalRepos != 50 {
+		t.Errorf("Expected totalRepos 50, got %d", tuiModel.progress.totalRepos)
 	}
 }

@@ -64,13 +64,21 @@ func TestDetectTerminalCapabilities(t *testing.T) {
 			originalTerm := os.Getenv("TERM")
 			
 			// Set test environment variables
-			os.Setenv("COLORTERM", tt.colorTerm)
-			os.Setenv("TERM", tt.term)
+			if err := os.Setenv("COLORTERM", tt.colorTerm); err != nil {
+				t.Fatalf("Failed to set COLORTERM: %v", err)
+			}
+			if err := os.Setenv("TERM", tt.term); err != nil {
+				t.Fatalf("Failed to set TERM: %v", err)
+			}
 			
 			// Restore original environment variables after test
 			defer func() {
-				os.Setenv("COLORTERM", originalColorTerm)
-				os.Setenv("TERM", originalTerm)
+				if err := os.Setenv("COLORTERM", originalColorTerm); err != nil {
+					t.Errorf("Failed to restore COLORTERM: %v", err)
+				}
+				if err := os.Setenv("TERM", originalTerm); err != nil {
+					t.Errorf("Failed to restore TERM: %v", err)
+				}
 			}()
 			
 			result := detectTerminalCapabilities()

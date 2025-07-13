@@ -71,9 +71,11 @@ tf-analyzer
 
 # But keep markdown reports and mutation testing configuration
 !*.md
-!.go-mutesting.yml
 
 # Mutation testing outputs (exclude generated mutation reports but keep config)
 mutants/
 mutation-report.*
-.mutants/
+mutants/
+
+coverage.html
+coverage.out

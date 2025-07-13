@@ -67,10 +67,19 @@ func parseOrganizations(orgString string) []string {
 	if orgString == "" {
 		return []string{}
 	}
-
-	orgs := strings.Split(orgString, ",")
-	return lo.Map(orgs, func(org string, _ int) string {
+	
+	// Split by both comma and space to support flexible input
+	var orgs []string
+	if strings.Contains(orgString, ",") {
+		orgs = strings.Split(orgString, ",")
+	} else {
+		orgs = strings.Fields(orgString)
+	}
+	
+	return lo.Filter(lo.Map(orgs, func(org string, _ int) string {
 		return strings.TrimSpace(org)
+	}), func(org string, _ int) bool {
+		return org != ""
 	})
 }
 

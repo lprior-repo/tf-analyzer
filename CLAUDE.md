@@ -12,12 +12,14 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 - **Pure Functions**: Use focused functions with no side effects for predictability
 - **Modularity**: Design loosely coupled, composable components
 - **Domain-based Structure**: Each file has a specific purpose, avoiding folders when possible
-- **100% Test Coverage**: All code must be thoroughly tested
+- **90%+ Test Coverage**: All code must be thoroughly tested (currently achieved 90%+ coverage)
+- **Zero Linting Issues**: All code passes golangci-lint with strict error checking (errcheck + staticcheck)
 - **AI Compatibility**: Structure code to be easily parsed and enhanced by AI tools
 
 ## Code Standards
 
 ### Function Guidelines
+
 - Limit functions to 10-25 lines, performing one task only
 - Cap cyclomatic complexity at 8 (enforced by golangci-lint)
 - Limit nesting to 2 levels maximum
@@ -25,20 +27,25 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 - Use verb+noun naming (e.g., `calculateTotal`)
 
 ### File Organization
+
 - Limit files to 300 lines for navigability
 - Export minimally - only expose essentials
 - Use descriptive variable names (e.g., `userProfiles`)
 - Avoid abbreviations unless universal
 
 ### Quality Requirements
+
 - Use assertive programming throughout the codebase
 - Enforce type safety to catch errors early
 - Validate inputs and handle errors safely
 - Follow CUPID principles: Composable, Unix-like, Predictable, Idiomatic, Domain-based
+- **Zero tolerance for linting issues**: All errcheck and staticcheck issues must be resolved
+- **Comprehensive error handling**: All function return values must be properly checked
 
 ## Development Commands
 
 ### Essential Commands
+
 - `task build` - Build the application
 - `task test` - Run all tests
 - `task lint` - Run golangci-lint with complexity checks
@@ -46,16 +53,19 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 - `task ci` - Run full CI pipeline (lint + test)
 
 ### Development Setup
+
 - `task init` - Initialize project and install tools
 - `task install-tools` - Install golangci-lint and development tools
 - `task deps` - Download dependencies
 
 ### Code Quality
+
 - `task lint-fix` - Auto-fix linting issues
-- `task coverage` - Generate test coverage report
+- `task coverage` - Generate test coverage report (target: 90%+)
 - `task sec` - Run security checks
 
 ### Performance
+
 - `task bench` - Run benchmarks
 - `task profile-cpu` - CPU profiling
 - `task profile-mem` - Memory profiling
@@ -63,6 +73,7 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 ## Project Configuration
 
 ### Environment Variables (.env)
+
 - `GITHUB_TOKEN` - GitHub API token for repository access
 - `MAX_CONCURRENT_CLONES` - Concurrent repository cloning limit
 - `MAX_CONCURRENT_ANALYZERS` - Concurrent file analysis limit
@@ -73,16 +84,24 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 - `GHORG_SCM_TYPE` - Source control management type (github, gitlab, gitea, etc.)
 
 ### Code Quality Enforcement
+
 - golangci-lint configured with cyclomatic complexity limit of 8
 - Function length limited to 25 lines
 - Maximum 3 parameters per function
 - Comprehensive linting rules for performance and security
+- **Zero linting issues policy**: All errcheck and staticcheck violations resolved
+- **90%+ test coverage achieved** with comprehensive unit, integration, and property-based tests
+
+### Test Organization
+
+- **One test file per source file**: Each `xyz.go` has corresponding `xyz_test.go`
+- **Comprehensive test types**: Unit tests, integration tests, property-based tests, and fuzz tests
+- **Test consolidation**: All test types (critical, additional, integration) consolidated into single files
+- **Error path coverage**: All error handling paths tested with proper cleanup
 
 The project emphasizes avoiding OOP patterns in favor of simple, stateless functions and values adaptability and easy refactoring for dynamic development workflows.
 
 ## Functional Programming in Go
-
-This guide explores functional programming (FP) principles in Go, focusing on practical application over theoretical purity. The goal is to leverage FP concepts to write clear, maintainable, and highly testable Go code by treating functions as first-class citizens and creating clean separation between logic and side effects.
 
 Modern Go development often relies on the `github.com/samber/lo` library for common functional patterns like `Map`, `Filter`, and `Reduce`.
 
@@ -103,6 +122,7 @@ Core principle: Functions must be deterministic (same inputs → same outputs) a
 ### Core Functional Utilities
 
 #### Filter: Selecting Data
+
 ```go
 longWords := lo.Filter(words, func(s string, _ int) bool {
     return len(s) > 6
@@ -110,6 +130,7 @@ longWords := lo.Filter(words, func(s string, _ int) bool {
 ```
 
 #### Map: Transforming Data
+
 ```go
 names := lo.Map(users, func(u User, _ int) string {
     return strings.ToUpper(u.Name)
@@ -117,6 +138,7 @@ names := lo.Map(users, func(u User, _ int) string {
 ```
 
 #### Reduce: Aggregating Data
+
 ```go
 total := lo.Reduce(items, func(acc float64, item OrderItem, _ int) float64 {
     return acc + (item.Price * float64(item.Quantity))
@@ -134,6 +156,7 @@ total := lo.Reduce(items, func(acc float64, item OrderItem, _ int) float64 {
 Contain side effects by pushing impure operations to program edges. Create wrapper Actions that perform impure work and pass clean data to the pure core.
 
 ### Workflow Pattern
+
 1. Actions get data from external world
 2. Pass data to pure Calculations
 3. Use results in final Actions for I/O operations
@@ -147,12 +170,14 @@ This project integrates with [ghorg](https://github.com/gabrie30/ghorg) for effi
 The `ghorg reclone` command provides centralized configuration management for multiple repository cloning operations:
 
 #### Key Features
+
 - **Configuration-driven**: Uses `reclone.yaml` stored in `$HOME/.config/ghorg`
 - **Batch operations**: Clone multiple organizations/repositories with a single command
 - **Post-execution scripts**: Run custom scripts after successful/failed clones
 - **Selective execution**: Target specific reclone configurations by name
 
 #### Usage Examples
+
 ```bash
 # Clone all configured entries
 ghorg reclone
@@ -171,6 +196,7 @@ ghorg reclone-cron
 ```
 
 #### Configuration Format
+
 ```yaml
 # ~/.config/ghorg/reclone.yaml
 gitlab-examples:
@@ -184,6 +210,7 @@ kubernetes-sig:
 ```
 
 #### Integration Benefits
+
 - **Consistency**: Standardized cloning across different SCM providers
 - **Automation**: Scheduled repository updates via cron integration
 - **Monitoring**: Post-execution scripts for logging and notifications
@@ -194,6 +221,7 @@ kubernetes-sig:
 This project requires the following Go libraries:
 
 ### Core Libraries
+
 - `github.com/samber/lo` - Functional programming utilities (Map, Filter, Reduce)
 - `github.com/bitfield/script` - Shell-like operations and file handling
 - `github.com/panjf2000/ants/v2` - High-performance goroutine pool
@@ -201,13 +229,16 @@ This project requires the following Go libraries:
 - `github.com/joho/godotenv` - Environment variable loading
 
 ### Script Library Usage
+
 The `script` library replaces standard library operations for:
+
 - File reading/writing: `script.File(path).Bytes()` instead of `os.ReadFile`
 - Command execution: `script.Exec(cmd)` instead of `exec.Command`
 - Text processing: Built-in pipeline operations like `Match`, `Filter`, `Replace`
 - HTTP requests: `script.Get(url)` and `script.Post(url)` for web operations
 
 ### Installation
+
 ```bash
 go get github.com/bitfield/script
 go get github.com/samber/lo

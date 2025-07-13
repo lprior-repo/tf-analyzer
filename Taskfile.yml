@@ -27,7 +27,7 @@ tasks:
     desc: Run the application
     cmds:
       - echo "Running tf-analyzer..."
-      - go run .
+      - go run . --env-file .env
 
   dev:
     desc: Run with live reload (requires air)

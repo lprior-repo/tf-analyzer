@@ -324,28 +324,28 @@ func (r *Reporter) generateMarkdownContent() string {
 
 func (r *Reporter) appendReportHeader(builder *strings.Builder) {
 	builder.WriteString("# Terraform Analysis Report\n\n")
-	builder.WriteString(fmt.Sprintf("Generated on: %s\n\n", 
-		time.Now().Format("2006-01-02 15:04:05 UTC")))
+	fmt.Fprintf(builder, "Generated on: %s\n\n", 
+		time.Now().Format("2006-01-02 15:04:05 UTC"))
 }
 
 func (r *Reporter) appendExecutiveSummary(builder *strings.Builder, report *ComprehensiveReport, skippedRepos []string) {
 	builder.WriteString("## Executive Summary\n\n")
-	builder.WriteString(fmt.Sprintf("- **Total repositories scanned**: %d\n", 
-		report.GlobalSummary.TotalReposScanned))
-	builder.WriteString(fmt.Sprintf("- **Repositories with content**: %d\n", 
-		len(report.Repositories)))
-	builder.WriteString(fmt.Sprintf("- **Repositories skipped (no relevant content)**: %d\n", 
-		len(skippedRepos)))
-	builder.WriteString(fmt.Sprintf("- **Total providers found**: %d\n", 
-		calculateTotalProviders(report.Repositories)))
-	builder.WriteString(fmt.Sprintf("- **Total modules found**: %d\n", 
-		calculateTotalModules(report.Repositories)))
-	builder.WriteString(fmt.Sprintf("- **Total resources found**: %d\n", 
-		calculateTotalResources(report.Repositories)))
-	builder.WriteString(fmt.Sprintf("- **Total variables found**: %d\n", 
-		calculateTotalVariables(report.Repositories)))
-	builder.WriteString(fmt.Sprintf("- **Total outputs found**: %d\n", 
-		calculateTotalOutputs(report.Repositories)))
+	fmt.Fprintf(builder, "- **Total repositories scanned**: %d\n", 
+		report.GlobalSummary.TotalReposScanned)
+	fmt.Fprintf(builder, "- **Repositories with content**: %d\n", 
+		len(report.Repositories))
+	fmt.Fprintf(builder, "- **Repositories skipped (no relevant content)**: %d\n", 
+		len(skippedRepos))
+	fmt.Fprintf(builder, "- **Total providers found**: %d\n", 
+		calculateTotalProviders(report.Repositories))
+	fmt.Fprintf(builder, "- **Total modules found**: %d\n", 
+		calculateTotalModules(report.Repositories))
+	fmt.Fprintf(builder, "- **Total resources found**: %d\n", 
+		calculateTotalResources(report.Repositories))
+	fmt.Fprintf(builder, "- **Total variables found**: %d\n", 
+		calculateTotalVariables(report.Repositories))
+	fmt.Fprintf(builder, "- **Total outputs found**: %d\n", 
+		calculateTotalOutputs(report.Repositories))
 	builder.WriteString("\n")
 }
 
@@ -355,15 +355,15 @@ func (r *Reporter) appendBackendSummary(builder *strings.Builder, report *Compre
 	}
 	
 	builder.WriteString("## Backend Configuration Summary\n\n")
-	builder.WriteString(fmt.Sprintf("Found **%d** unique backend configurations:\n\n", 
-		report.GlobalSummary.GlobalBackendSummary.UniqueBackendConfigCount))
+	fmt.Fprintf(builder, "Found **%d** unique backend configurations:\n\n", 
+		report.GlobalSummary.GlobalBackendSummary.UniqueBackendConfigCount)
 	
 	builder.WriteString("| Backend Type | Region | Repository Count |\n")
 	builder.WriteString("|-------------|--------|------------------|\n")
 	
 	for _, config := range report.GlobalSummary.GlobalBackendSummary.BackendConfigs {
-		builder.WriteString(fmt.Sprintf("| %s | %s | %d |\n",
-			config.Type, config.Region, config.Count))
+		fmt.Fprintf(builder, "| %s | %s | %d |\n",
+			config.Type, config.Region, config.Count)
 	}
 	builder.WriteString("\n")
 }
@@ -388,7 +388,7 @@ func (r *Reporter) appendRepositoryRow(builder *strings.Builder, repo Repository
 	backendType := getBackendType(repo.BackendConfig)
 	backendRegion := getBackendRegion(repo.BackendConfig)
 	
-	builder.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %s | %s |\n",
+	fmt.Fprintf(builder, "| %s | %d | %d | %d | %d | %d | %s | %s |\n",
 		repoName,
 		repo.Providers.UniqueProviderCount,
 		repo.Modules.TotalModuleCalls,
@@ -396,7 +396,7 @@ func (r *Reporter) appendRepositoryRow(builder *strings.Builder, repo Repository
 		len(repo.VariableAnalysis.DefinedVariables),
 		repo.OutputAnalysis.OutputCount,
 		backendType,
-		backendRegion))
+		backendRegion)
 }
 
 func (r *Reporter) appendSkippedRepositories(builder *strings.Builder, skippedRepos []string) {
@@ -408,7 +408,7 @@ func (r *Reporter) appendSkippedRepositories(builder *strings.Builder, skippedRe
 	builder.WriteString("The following repositories were scanned but contained no Terraform files (.tf, .tfvars, .hcl):\n\n")
 	
 	for _, repoName := range skippedRepos {
-		builder.WriteString(fmt.Sprintf("- %s\n", repoName))
+		fmt.Fprintf(builder, "- %s\n", repoName)
 	}
 	builder.WriteString("\n")
 }
@@ -426,8 +426,8 @@ func (r *Reporter) appendProviderDetails(builder *strings.Builder, report *Compr
 		builder.WriteString("|----------|---------|------------------|\n")
 		
 		for _, provider := range providerUsage {
-			builder.WriteString(fmt.Sprintf("| %s | %s | %d |\n",
-				provider.Source, provider.Version, provider.Count))
+			fmt.Fprintf(builder, "| %s | %s | %d |\n",
+				provider.Source, provider.Version, provider.Count)
 		}
 		builder.WriteString("\n")
 	}
@@ -440,8 +440,8 @@ func (r *Reporter) appendUntaggedResourcesSummary(builder *strings.Builder, repo
 	}
 	
 	builder.WriteString("## Resource Tagging Compliance\n\n")
-	builder.WriteString(fmt.Sprintf("Found **%d** resources missing mandatory tags (%s).\n\n",
-		untaggedResourcesCount, strings.Join(mandatoryTags, ", ")))
+	fmt.Fprintf(builder, "Found **%d** resources missing mandatory tags (%s).\n\n",
+		untaggedResourcesCount, strings.Join(mandatoryTags, ", "))
 	
 	builder.WriteString("### Repositories with Untagged Resources\n\n")
 	builder.WriteString("| Repository | Untagged Resources |\n")
@@ -450,8 +450,8 @@ func (r *Reporter) appendUntaggedResourcesSummary(builder *strings.Builder, repo
 	for _, repo := range report.Repositories {
 		if len(repo.ResourceAnalysis.UntaggedResources) > 0 {
 			repoName := extractRepoName(repo.RepositoryPath)
-			builder.WriteString(fmt.Sprintf("| %s | %d |\n",
-				repoName, len(repo.ResourceAnalysis.UntaggedResources)))
+			fmt.Fprintf(builder, "| %s | %d |\n",
+				repoName, len(repo.ResourceAnalysis.UntaggedResources))
 		}
 	}
 	builder.WriteString("\n")

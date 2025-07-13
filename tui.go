@@ -16,13 +16,16 @@ import (
 // ============================================================================
 
 type ProgressModel struct {
-	progress    progress.Model
-	total       int
-	completed   int
-	currentRepo string
-	currentOrg  string
-	done        bool
-	results     []AnalysisResult
+	progress     progress.Model
+	total        int
+	completed    int
+	currentRepo  string
+	currentOrg   string
+	currentPhase string
+	repoCount    int
+	totalRepos   int
+	done         bool
+	results      []AnalysisResult
 }
 
 type ResultsModel struct {
@@ -45,6 +48,9 @@ type ProgressMsg struct {
 	Organization string
 	Completed    int
 	Total        int
+	Phase        string
+	RepoCount    int
+	TotalRepos   int
 }
 
 type CompletedMsg struct {
@@ -61,19 +67,30 @@ var (
 	titleStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#FAFAFA")).
 		Background(lipgloss.Color("#7D56F4")).
-		Padding(0, 1)
+		Padding(0, 1).
+		Bold(true)
 
 	statusStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7C7C7C"))
 
 	helpStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#626262"))
+		Foreground(lipgloss.Color("#626262")).
+		Italic(true)
 
 	successStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#04B575"))
+		Foreground(lipgloss.Color("#04B575")).
+		Bold(true)
 
 	errorStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FF0000"))
+		Foreground(lipgloss.Color("#FF0000")).
+		Bold(true)
+
+	highlightStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFA500")).
+		Bold(true)
+	
+	infoStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00BFFF"))
 )
 
 func NewTUIModel(total int) TUIModel {
@@ -154,6 +171,9 @@ func (m TUIModel) handleCustomWindowResize(msg WindowSizeMsg) TUIModel {
 func (m TUIModel) handleProgressUpdate(msg ProgressMsg) (tea.Model, tea.Cmd) {
 	m.progress.currentRepo = msg.Repo
 	m.progress.currentOrg = msg.Organization
+	m.progress.currentPhase = msg.Phase
+	m.progress.repoCount = msg.RepoCount
+	m.progress.totalRepos = msg.TotalRepos
 	m.progress.completed = msg.Completed
 	m.progress.total = msg.Total
 	
@@ -199,16 +219,28 @@ func (m TUIModel) View() string {
 func (m TUIModel) renderProgressView() string {
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render("TF-ANALYZER"))
+	// Title with organization info
+	title := "TF-ANALYZER"
+	if m.progress.currentOrg != "" {
+		title = fmt.Sprintf("TF-ANALYZER • %s", m.progress.currentOrg)
+	}
+	b.WriteString(titleStyle.Render(title))
 	b.WriteString("\n\n")
 
-	// Progress info
-	if m.progress.currentOrg != "" {
-		b.WriteString(fmt.Sprintf("Organization: %s\n", successStyle.Render(m.progress.currentOrg)))
+	// Current phase and progress info
+	if m.progress.currentPhase != "" {
+		phaseEmoji := getPhaseEmoji(m.progress.currentPhase)
+		b.WriteString(fmt.Sprintf("%s %s\n", phaseEmoji, statusStyle.Render(m.progress.currentPhase)))
 	}
+	
 	if m.progress.currentRepo != "" {
-		b.WriteString(fmt.Sprintf("Processing: %s\n", statusStyle.Render(m.progress.currentRepo)))
+		b.WriteString(fmt.Sprintf("📁 Repository: %s\n", successStyle.Render(m.progress.currentRepo)))
+	}
+	
+	// Repository count info
+	if m.progress.totalRepos > 0 {
+		b.WriteString(fmt.Sprintf("📊 Repository Progress: %d/%d\n", 
+			m.progress.repoCount, m.progress.totalRepos))
 	}
 	b.WriteString("\n")
 
@@ -216,62 +248,99 @@ func (m TUIModel) renderProgressView() string {
 	b.WriteString(m.progress.progress.View())
 	b.WriteString("\n\n")
 
-	// Stats
-	b.WriteString(fmt.Sprintf("Completed: %d/%d repositories\n", 
-		m.progress.completed, m.progress.total))
+	// Overall stats
+	percentage := float64(0)
+	if m.progress.total > 0 {
+		percentage = float64(m.progress.completed) / float64(m.progress.total) * 100
+	}
+	b.WriteString(fmt.Sprintf("🎯 Overall Progress: %d/%d files (%.1f%%)\n", 
+		m.progress.completed, m.progress.total, percentage))
 
 	if m.progress.done {
 		b.WriteString("\n")
-		b.WriteString(successStyle.Render("✓ Analysis complete!"))
+		b.WriteString(successStyle.Render("✅ Analysis complete!"))
 		b.WriteString("\n\n")
 		b.WriteString(helpStyle.Render("Press any key to view results..."))
 	} else {
 		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("Press 'q' to quit"))
+		b.WriteString(helpStyle.Render("Press 'q' to quit • Live progress updates"))
 	}
 
 	return b.String()
 }
 
+func getPhaseEmoji(phase string) string {
+	switch strings.ToLower(phase) {
+	case "cloning", "clone":
+		return "📥"
+	case "analyzing", "analysis":
+		return "🔍"
+	case "processing":
+		return "⚡"
+	case "fetching":
+		return "🌐"
+	case "complete", "completed":
+		return "✅"
+	default:
+		return "🔄"
+	}
+}
+
 func (m TUIModel) renderResultsView() string {
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render("ANALYSIS RESULTS"))
+	// Title with completion indicator
+	b.WriteString(titleStyle.Render("✅ ANALYSIS RESULTS"))
 	b.WriteString("\n\n")
 
-	// Summary
+	// Summary with better styling
 	successful := 0
 	failed := 0
+	totalProviders := 0
+	totalModules := 0
+	totalResources := 0
+	
 	for _, result := range m.progress.results {
 		if result.Error != nil {
 			failed++
 		} else {
 			successful++
+			totalProviders += result.Analysis.Providers.UniqueProviderCount
+			totalModules += result.Analysis.Modules.TotalModuleCalls
+			totalResources += result.Analysis.ResourceAnalysis.TotalResourceCount
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("Total repositories: %d | ", len(m.progress.results)))
-	b.WriteString(successStyle.Render(fmt.Sprintf("Successful: %d", successful)))
+	// Repository summary
+	b.WriteString(fmt.Sprintf("📊 %s | ", infoStyle.Render(fmt.Sprintf("Total: %d repos", len(m.progress.results)))))
+	b.WriteString(successStyle.Render(fmt.Sprintf("✅ Success: %d", successful)))
 	b.WriteString(" | ")
 	if failed > 0 {
-		b.WriteString(errorStyle.Render(fmt.Sprintf("Failed: %d", failed)))
+		b.WriteString(errorStyle.Render(fmt.Sprintf("❌ Failed: %d", failed)))
 	} else {
-		b.WriteString(fmt.Sprintf("Failed: %d", failed))
+		b.WriteString(fmt.Sprintf("❌ Failed: %d", failed))
 	}
+	b.WriteString("\n")
+
+	// Infrastructure summary
+	b.WriteString(fmt.Sprintf("🔧 %s | ", highlightStyle.Render(fmt.Sprintf("Providers: %d", totalProviders))))
+	b.WriteString(fmt.Sprintf("📦 %s | ", highlightStyle.Render(fmt.Sprintf("Modules: %d", totalModules))))
+	b.WriteString(fmt.Sprintf("🏗️  %s", highlightStyle.Render(fmt.Sprintf("Resources: %d", totalResources))))
 	b.WriteString("\n\n")
 
 	// Table
+	viewType := "Summary View"
 	if m.results.showDetails {
-		b.WriteString("Detailed View:\n")
+		viewType = "Detailed View"
+		b.WriteString(fmt.Sprintf("📋 %s:\n", infoStyle.Render(viewType)))
 		b.WriteString(m.results.table.View())
 	} else {
-		b.WriteString("Summary View:\n")
+		b.WriteString(fmt.Sprintf("📋 %s:\n", infoStyle.Render(viewType)))
 		b.WriteString(m.createSummaryTable())
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Controls: [tab] toggle view | [r] export reports | [q] quit"))
+	b.WriteString(helpStyle.Render("💡 Controls: [tab] toggle view | [r] export reports | [q] quit"))
 
 	return b.String()
 }
@@ -412,12 +481,19 @@ func (t *TUIProgressChannel) Start(ctx context.Context) {
 }
 
 func (t *TUIProgressChannel) UpdateProgress(repo, org string, completed, total int) {
+	t.UpdateProgressWithPhase(repo, org, "", completed, total, 0, 0)
+}
+
+func (t *TUIProgressChannel) UpdateProgressWithPhase(repo, org, phase string, completed, total, repoCount, totalRepos int) {
 	select {
 	case t.progressChan <- ProgressMsg{
 		Repo:         repo,
 		Organization: org,
+		Phase:        phase,
 		Completed:    completed,
 		Total:        total,
+		RepoCount:    repoCount,
+		TotalRepos:   totalRepos,
 	}:
 	default:
 		// Channel full, skip update

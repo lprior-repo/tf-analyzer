@@ -75,8 +75,11 @@ multiple GitHub organizations to provide comprehensive insights into your infras
 	# Set your GitHub token
 	export GITHUB_TOKEN=your_token_here
 	
-	# Analyze organizations with interactive TUI
+	# Analyze organizations with interactive TUI (comma-separated)
 	tf-analyzer analyze --orgs "hashicorp,terraform-providers"
+	
+	# Analyze organizations with space-separated list (no quotes needed)
+	tf-analyzer analyze --orgs hashicorp terraform-providers aws-samples
 	
 	# Run without TUI and export to custom directory  
 	tf-analyzer analyze --orgs "my-org" --no-tui --output-dir ./reports
@@ -99,9 +102,12 @@ comprehensive Terraform configuration analysis.
 ## Examples
 
 	# Analyze single organization
-	tf-analyzer analyze --orgs "hashicorp"
+	tf-analyzer analyze --orgs hashicorp
 	
-	# Analyze multiple organizations with custom settings
+	# Analyze multiple organizations (space-separated, no quotes needed)
+	tf-analyzer analyze --orgs hashicorp terraform-providers aws-samples
+	
+	# Analyze multiple organizations with custom settings (comma-separated)
 	tf-analyzer analyze --orgs "org1,org2,org3" --max-goroutines 50 --timeout 45m
 	
 	# Export reports to specific directory without TUI
@@ -175,7 +181,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 
 	// Analyze command flags
-	analyzeCmd.Flags().StringSliceVarP(&organizations, "orgs", "o", []string{}, "GitHub organizations to analyze (comma-separated)")
+	analyzeCmd.Flags().StringSliceVarP(&organizations, "orgs", "o", []string{}, "GitHub organizations to analyze (space or comma-separated)")
 	analyzeCmd.Flags().StringVarP(&githubToken, "token", "t", "", "GitHub API token")
 	analyzeCmd.Flags().IntVar(&maxGoroutines, "max-goroutines", 100, "maximum concurrent goroutines")
 	analyzeCmd.Flags().IntVar(&cloneConcurrency, "clone-concurrency", 100, "clone concurrency limit")
@@ -187,19 +193,41 @@ func init() {
 	analyzeCmd.Flags().BoolVar(&rawMarkdown, "raw-markdown", false, "print raw markdown without glamour rendering")
 
 	// Mark required flags
-	analyzeCmd.MarkFlagRequired("orgs")
+	if err := analyzeCmd.MarkFlagRequired("orgs"); err != nil {
+		panic(fmt.Sprintf("Failed to mark orgs flag as required: %v", err))
+	}
 
 	// Bind flags to viper
-	viper.BindPFlag("organizations", analyzeCmd.Flags().Lookup("orgs"))
-	viper.BindPFlag("github.token", analyzeCmd.Flags().Lookup("token"))
-	viper.BindPFlag("processing.max_goroutines", analyzeCmd.Flags().Lookup("max-goroutines"))
-	viper.BindPFlag("processing.clone_concurrency", analyzeCmd.Flags().Lookup("clone-concurrency"))
-	viper.BindPFlag("processing.timeout", analyzeCmd.Flags().Lookup("timeout"))
-	viper.BindPFlag("output.format", analyzeCmd.Flags().Lookup("format"))
-	viper.BindPFlag("output.directory", analyzeCmd.Flags().Lookup("output-dir"))
-	viper.BindPFlag("ui.no_tui", analyzeCmd.Flags().Lookup("no-tui"))
-	viper.BindPFlag("ui.markdown_style", analyzeCmd.Flags().Lookup("markdown-style"))
-	viper.BindPFlag("ui.raw_markdown", analyzeCmd.Flags().Lookup("raw-markdown"))
+	if err := viper.BindPFlag("organizations", analyzeCmd.Flags().Lookup("orgs")); err != nil {
+		panic(fmt.Sprintf("Failed to bind organizations flag: %v", err))
+	}
+	if err := viper.BindPFlag("github.token", analyzeCmd.Flags().Lookup("token")); err != nil {
+		panic(fmt.Sprintf("Failed to bind github.token flag: %v", err))
+	}
+	if err := viper.BindPFlag("processing.max_goroutines", analyzeCmd.Flags().Lookup("max-goroutines")); err != nil {
+		panic(fmt.Sprintf("Failed to bind max_goroutines flag: %v", err))
+	}
+	if err := viper.BindPFlag("processing.clone_concurrency", analyzeCmd.Flags().Lookup("clone-concurrency")); err != nil {
+		panic(fmt.Sprintf("Failed to bind clone_concurrency flag: %v", err))
+	}
+	if err := viper.BindPFlag("processing.timeout", analyzeCmd.Flags().Lookup("timeout")); err != nil {
+		panic(fmt.Sprintf("Failed to bind timeout flag: %v", err))
+	}
+	if err := viper.BindPFlag("output.format", analyzeCmd.Flags().Lookup("format")); err != nil {
+		panic(fmt.Sprintf("Failed to bind format flag: %v", err))
+	}
+	if err := viper.BindPFlag("output.directory", analyzeCmd.Flags().Lookup("output-dir")); err != nil {
+		panic(fmt.Sprintf("Failed to bind output directory flag: %v", err))
+	}
+	if err := viper.BindPFlag("ui.no_tui", analyzeCmd.Flags().Lookup("no-tui")); err != nil {
+		panic(fmt.Sprintf("Failed to bind no_tui flag: %v", err))
+	}
+	if err := viper.BindPFlag("ui.markdown_style", analyzeCmd.Flags().Lookup("markdown-style")); err != nil {
+		panic(fmt.Sprintf("Failed to bind markdown_style flag: %v", err))
+	}
+	if err := viper.BindPFlag("ui.raw_markdown", analyzeCmd.Flags().Lookup("raw-markdown")); err != nil {
+		panic(fmt.Sprintf("Failed to bind raw_markdown flag: %v", err))
+	}
 
 	// Add subcommands
 	configCmd.AddCommand(configShowCmd, configInitCmd, configValidateCmd)
@@ -238,10 +266,18 @@ func initializeConfig() {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// Specific environment variable mappings
-	viper.BindEnv("github.token", "GITHUB_TOKEN")
-	viper.BindEnv("organizations", "GITHUB_ORGS")
-	viper.BindEnv("processing.max_goroutines", "MAX_GOROUTINES")
-	viper.BindEnv("processing.clone_concurrency", "CLONE_CONCURRENCY")
+	if err := viper.BindEnv("github.token", "GITHUB_TOKEN"); err != nil {
+		panic(fmt.Sprintf("Failed to bind GITHUB_TOKEN env var: %v", err))
+	}
+	if err := viper.BindEnv("organizations", "GITHUB_ORGS"); err != nil {
+		panic(fmt.Sprintf("Failed to bind GITHUB_ORGS env var: %v", err))
+	}
+	if err := viper.BindEnv("processing.max_goroutines", "MAX_GOROUTINES"); err != nil {
+		panic(fmt.Sprintf("Failed to bind MAX_GOROUTINES env var: %v", err))
+	}
+	if err := viper.BindEnv("processing.clone_concurrency", "CLONE_CONCURRENCY"); err != nil {
+		panic(fmt.Sprintf("Failed to bind CLONE_CONCURRENCY env var: %v", err))
+	}
 
 	if err := viper.ReadInConfig(); err == nil && verbose {
 		fmt.Printf("Using config file: %s\n", viper.ConfigFileUsed())

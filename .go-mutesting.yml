@@ -10,23 +10,23 @@ mutators:
   # Swap binary operators (+ to -, * to /, == to !=, etc.)
   - name: "binary-operator"
     enabled: true
-  
+
   # Change conditional boundaries (< to <=, > to >=, etc.)
   - name: "conditional-boundaries"
     enabled: true
-  
+
   # Negate conditionals (if a == b -> if a != b)
   - name: "conditional-negation"
     enabled: true
-  
+
   # Remove a statement entirely
   - name: "statement-removal"
     enabled: true
-  
+
   # Replace constants with different values
   - name: "constant-replacement"
     enabled: true
-  
+
   # Invert boolean expressions
   - name: "boolean-inversion"
     enabled: true
@@ -40,7 +40,8 @@ exclude:
   - ".git/*"
 
 # Minimum mutation score target (85% as per framework requirements)
-threshold: 85
+threshold: 95
 
 # Fail build if mutation score is below target
 fail_on_low_score: true
+
