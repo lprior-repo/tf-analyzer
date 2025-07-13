@@ -60,3 +60,7 @@ tmp/
 /repos/
 /organizations/
 /analysis-output/
+
+# Report files
+*.json
+*.csv

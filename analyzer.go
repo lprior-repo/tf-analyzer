@@ -5,11 +5,14 @@ import (
 	"io/fs"
 	"log/slog"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/bitfield/script"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/samber/lo"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // ============================================================================
@@ -92,6 +95,22 @@ type AnalysisResult struct {
 	Error        error
 }
 
+type RawAnalysisData struct {
+	Backend           *BackendConfig
+	Providers         []ProviderDetail
+	Modules           []ModuleDetail
+	ResourceTypes     []ResourceType
+	UntaggedResources []UntaggedResource
+	Variables         []VariableDefinition
+	Outputs           []string
+}
+
+type FileProcessingStats struct {
+	FilesProcessed int
+	FilesSkipped   int
+	FilesErrored   int
+}
+
 var mandatoryTags = []string{"Environment", "Owner", "Project"}
 
 func isRelevantFile(path string) bool {
@@ -105,162 +124,243 @@ func shouldSkipPath(path string) bool {
 	return strings.Contains(path, "/.git/")
 }
 
-func parseBackend(content string) *BackendConfig {
-	backendRegex := regexp.MustCompile(`(?s)backend\s+"([^"]+)"\s*\{([^}]*)\}`)
-	match := backendRegex.FindStringSubmatch(content)
-
-	if len(match) < 3 {
+func parseBackend(content string, filename string) *BackendConfig {
+	body := parseHCLBody(content, filename)
+	if body == nil {
 		return nil
 	}
 
-	backendType := match[1]
-	backendBody := match[2]
-
-	var region *string
-	regionRegex := regexp.MustCompile(`region\s*=\s*"([^"]+)"`)
-	if regionMatch := regionRegex.FindStringSubmatch(backendBody); len(regionMatch) >= 2 {
-		regionVal := regionMatch[1]
-		region = &regionVal
-	}
-
-	return &BackendConfig{
-		Type:   &backendType,
-		Region: region,
-	}
+	return findBackendConfig(body)
 }
 
-func parseProviders(content string) []ProviderDetail {
+func findBackendConfig(body *hclsyntax.Body) *BackendConfig {
+	for _, block := range body.Blocks {
+		if block.Type == "terraform" {
+			if config := findBackendInTerraformBlock(block); config != nil {
+				return config
+			}
+		}
+	}
+	return nil
+}
+
+func findBackendInTerraformBlock(terraformBlock *hclsyntax.Block) *BackendConfig {
+	for _, innerBlock := range terraformBlock.Body.Blocks {
+		if isBackendBlock(innerBlock) {
+			return createBackendConfig(innerBlock)
+		}
+	}
+	return nil
+}
+
+func isBackendBlock(block *hclsyntax.Block) bool {
+	return block.Type == "backend" && len(block.Labels) > 0
+}
+
+func createBackendConfig(backendBlock *hclsyntax.Block) *BackendConfig {
+	backendType := backendBlock.Labels[0]
+	config := &BackendConfig{Type: &backendType}
+	
+	if region := extractRegionFromBackend(backendBlock.Body); region != "" {
+		config.Region = &region
+	}
+	
+	return config
+}
+
+func extractRegionFromBackend(body *hclsyntax.Body) string {
+	attr, exists := body.Attributes["region"]
+	if !exists {
+		return ""
+	}
+	
+	regionVal, diags := attr.Expr.Value(nil)
+	if diags.HasErrors() || regionVal.Type() != cty.String {
+		return ""
+	}
+	
+	return regionVal.AsString()
+}
+
+func parseProviders(content string, filename string) []ProviderDetail {
+	body := parseHCLBody(content, filename)
+	if body == nil {
+		return []ProviderDetail{}
+	}
+
 	providerMap := make(map[string]ProviderDetail)
-
-	// Parse provider blocks
-	providerRegex := regexp.MustCompile(`(?s)provider\s+"([^"]+)"\s*\{([^}]*)\}`)
-	matches := providerRegex.FindAllStringSubmatch(content, -1)
-	for _, match := range matches {
-		if len(match) >= 3 {
-			providerName := match[1]
-			providerBody := match[2]
-
-			var regions []string
-			regionRegex := regexp.MustCompile(`region\s*=\s*"([^"]+)"`)
-			if regionMatch := regionRegex.FindStringSubmatch(providerBody); len(regionMatch) >= 2 {
-				regions = append(regions, regionMatch[1])
-			}
-
-			key := fmt.Sprintf("%s@", providerName)
-			if _, exists := providerMap[key]; !exists {
-				providerMap[key] = ProviderDetail{
-					Source:  providerName,
-					Version: "",
-					Regions: regions,
-				}
-			} else {
-				existing := providerMap[key]
-				existing.Regions = lo.Union(existing.Regions, regions)
-				providerMap[key] = existing
-			}
-		}
-	}
-
-	// Parse required_providers
-	requiredRegex := regexp.MustCompile(`(?s)required_providers\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}`)
-	requiredMatches := requiredRegex.FindAllStringSubmatch(content, -1)
-	for _, match := range requiredMatches {
-		if len(match) >= 2 {
-			requiredBody := match[1]
-
-			providerDefRegex := regexp.MustCompile(`(\w+)\s*=\s*\{([^}]*)\}`)
-			providerDefs := providerDefRegex.FindAllStringSubmatch(requiredBody, -1)
-
-			for _, def := range providerDefs {
-				if len(def) >= 3 {
-					_ = def[1] // providerName not used
-					providerConfig := def[2]
-
-					sourceRegex := regexp.MustCompile(`source\s*=\s*"([^"]+)"`)
-					versionRegex := regexp.MustCompile(`version\s*=\s*"([^"]+)"`)
-
-					var source, version string
-					if sourceMatch := sourceRegex.FindStringSubmatch(providerConfig); len(sourceMatch) >= 2 {
-						source = sourceMatch[1]
-					}
-					if versionMatch := versionRegex.FindStringSubmatch(providerConfig); len(versionMatch) >= 2 {
-						version = versionMatch[1]
-					}
-
-					key := fmt.Sprintf("%s@%s", source, version)
-					if existing, exists := providerMap[key]; exists {
-						existing.Regions = lo.Union(existing.Regions, []string{})
-						providerMap[key] = existing
-					} else {
-						providerMap[key] = ProviderDetail{
-							Source:  source,
-							Version: version,
-							Regions: []string{},
-						}
-					}
-				}
-			}
-		}
-	}
-
+	parseProviderBlocks(body, providerMap)
+	parseRequiredProviders(body, providerMap)
+	
 	return lo.Values(providerMap)
 }
 
-func parseModules(content string) []ModuleDetail {
-	moduleMap := make(map[string]int)
-
-	moduleRegex := regexp.MustCompile(`(?s)module\s+"([^"]+)"\s*\{([^}]*)\}`)
-	matches := moduleRegex.FindAllStringSubmatch(content, -1)
-
-	for _, match := range matches {
-		if len(match) >= 3 {
-			moduleBody := match[2]
-
-			sourceRegex := regexp.MustCompile(`source\s*=\s*"([^"]+)"`)
-			if sourceMatch := sourceRegex.FindStringSubmatch(moduleBody); len(sourceMatch) >= 2 {
-				moduleMap[sourceMatch[1]]++
-			}
-		}
+func parseHCLBody(content string, filename string) *hclsyntax.Body {
+	parser := hclparse.NewParser()
+	file, diags := parser.ParseHCL([]byte(content), filename)
+	
+	if diags.HasErrors() {
+		return nil
 	}
 
+	body, ok := file.Body.(*hclsyntax.Body)
+	if !ok {
+		return nil
+	}
+	
+	return body
+}
+
+func parseProviderBlocks(body *hclsyntax.Body, providerMap map[string]ProviderDetail) {
+	for _, block := range body.Blocks {
+		if block.Type == "provider" && len(block.Labels) > 0 {
+			addProviderFromBlock(block, providerMap)
+		}
+	}
+}
+
+func addProviderFromBlock(block *hclsyntax.Block, providerMap map[string]ProviderDetail) {
+	providerName := block.Labels[0]
+	regions := extractRegionsFromBlock(block.Body)
+	key := fmt.Sprintf("%s@", providerName)
+	
+	if existing, exists := providerMap[key]; exists {
+		existing.Regions = lo.Union(existing.Regions, regions)
+		providerMap[key] = existing
+	} else {
+		providerMap[key] = ProviderDetail{
+			Source:  providerName,
+			Version: "",
+			Regions: regions,
+		}
+	}
+}
+
+func extractRegionsFromBlock(body *hclsyntax.Body) []string {
+	var regions []string
+	if attr, exists := body.Attributes["region"]; exists {
+		if regionVal, diags := attr.Expr.Value(nil); !diags.HasErrors() && regionVal.Type() == cty.String {
+			regions = append(regions, regionVal.AsString())
+		}
+	}
+	return regions
+}
+
+func parseRequiredProviders(body *hclsyntax.Body, providerMap map[string]ProviderDetail) {
+	for _, block := range body.Blocks {
+		if block.Type == "terraform" {
+			processRequiredProvidersInTerraformBlock(block, providerMap)
+		}
+	}
+}
+
+func processRequiredProvidersInTerraformBlock(block *hclsyntax.Block, providerMap map[string]ProviderDetail) {
+	for _, innerBlock := range block.Body.Blocks {
+		if innerBlock.Type == "required_providers" {
+			addRequiredProviders(innerBlock, providerMap)
+		}
+	}
+}
+
+func addRequiredProviders(block *hclsyntax.Block, providerMap map[string]ProviderDetail) {
+	for name, attr := range block.Body.Attributes {
+		if expr, ok := attr.Expr.(*hclsyntax.ObjectConsExpr); ok {
+			source, version := extractProviderSourceAndVersion(expr)
+			addProviderToMap(name, source, version, providerMap)
+		}
+	}
+}
+
+func extractProviderSourceAndVersion(expr *hclsyntax.ObjectConsExpr) (string, string) {
+	var source, version string
+	for _, item := range expr.Items {
+		key := extractKeyFromObjectItem(&item)
+		value := extractValueFromObjectItem(&item)
+		
+		switch key {
+		case "source":
+			source = value
+		case "version":
+			version = value
+		}
+	}
+	return source, version
+}
+
+func extractKeyFromObjectItem(item *hclsyntax.ObjectConsItem) string {
+	if keyExpr, ok := item.KeyExpr.(*hclsyntax.ObjectConsKeyExpr); ok {
+		if ident, ok := keyExpr.Wrapped.(*hclsyntax.ScopeTraversalExpr); ok && len(ident.Traversal) > 0 {
+			return ident.Traversal[0].(hcl.TraverseRoot).Name
+		}
+	}
+	return ""
+}
+
+func extractValueFromObjectItem(item *hclsyntax.ObjectConsItem) string {
+	if val, diags := item.ValueExpr.Value(nil); !diags.HasErrors() && val.Type() == cty.String {
+		return val.AsString()
+	}
+	return ""
+}
+
+func addProviderToMap(name, source, version string, providerMap map[string]ProviderDetail) {
+	if source != "" {
+		mapKey := fmt.Sprintf("%s@%s", source, version)
+		providerMap[mapKey] = ProviderDetail{
+			Source:  source,
+			Version: version,
+			Regions: []string{},
+		}
+	} else if name != "" {
+		mapKey := fmt.Sprintf("%s@%s", name, version)
+		providerMap[mapKey] = ProviderDetail{
+			Source:  name,
+			Version: version,
+			Regions: []string{},
+		}
+	}
+}
+
+func parseModules(content string, filename string) []ModuleDetail {
+	body := parseHCLBody(content, filename)
+	if body == nil {
+		return []ModuleDetail{}
+	}
+
+	moduleMap := extractModuleSources(body)
 	return lo.MapToSlice(moduleMap, func(source string, count int) ModuleDetail {
 		return ModuleDetail{Source: source, Count: count}
 	})
 }
 
-func parseResources(content string) ([]ResourceType, []UntaggedResource) {
-	resourceRegex := regexp.MustCompile(`(?s)resource\s+"([^"]+)"\s+"([^"]+)"\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}`)
-	matches := resourceRegex.FindAllStringSubmatch(content, -1)
-
-	resourceTypeMap := make(map[string]int)
-	var untaggedResources []UntaggedResource
-
-	for _, match := range matches {
-		if len(match) >= 4 {
-			resourceType := match[1]
-			resourceName := match[2]
-			resourceBody := match[3]
-
-			resourceTypeMap[resourceType]++
-
-			tags := parseResourceTags(resourceBody)
-			var missingTags []string
-			for _, requiredTag := range mandatoryTags {
-				if _, exists := tags[requiredTag]; !exists {
-					missingTags = append(missingTags, requiredTag)
-				}
-			}
-
-			if len(missingTags) > 0 {
-				untaggedResources = append(untaggedResources, UntaggedResource{
-					ResourceType: resourceType,
-					Name:         resourceName,
-					MissingTags:  missingTags,
-				})
+func extractModuleSources(body *hclsyntax.Body) map[string]int {
+	moduleMap := make(map[string]int)
+	for _, block := range body.Blocks {
+		if block.Type == "module" && len(block.Labels) > 0 {
+			if source := getModuleSource(block.Body); source != "" {
+				moduleMap[source]++
 			}
 		}
 	}
+	return moduleMap
+}
 
+func getModuleSource(body *hclsyntax.Body) string {
+	if attr, exists := body.Attributes["source"]; exists {
+		if sourceVal, diags := attr.Expr.Value(nil); !diags.HasErrors() && sourceVal.Type() == cty.String {
+			return sourceVal.AsString()
+		}
+	}
+	return ""
+}
+
+func parseResources(content string, filename string) ([]ResourceType, []UntaggedResource) {
+	body := parseHCLBody(content, filename)
+	if body == nil {
+		return []ResourceType{}, []UntaggedResource{}
+	}
+
+	resourceTypeMap, untaggedResources := processResourceBlocks(body)
 	resourceTypes := lo.MapToSlice(resourceTypeMap, func(resType string, count int) ResourceType {
 		return ResourceType{Type: resType, Count: count}
 	})
@@ -268,21 +368,70 @@ func parseResources(content string) ([]ResourceType, []UntaggedResource) {
 	return resourceTypes, untaggedResources
 }
 
-func parseResourceTags(resourceBody string) map[string]string {
+func processResourceBlocks(body *hclsyntax.Body) (map[string]int, []UntaggedResource) {
+	resourceTypeMap := make(map[string]int)
+	var untaggedResources []UntaggedResource
+
+	for _, block := range body.Blocks {
+		if block.Type == "resource" && len(block.Labels) >= 2 {
+			resourceType := block.Labels[0]
+			resourceName := block.Labels[1]
+			resourceTypeMap[resourceType]++
+
+			if untagged := checkResourceTags(block.Body, resourceType, resourceName); untagged != nil {
+				untaggedResources = append(untaggedResources, *untagged)
+			}
+		}
+	}
+
+	return resourceTypeMap, untaggedResources
+}
+
+func checkResourceTags(body *hclsyntax.Body, resourceType, resourceName string) *UntaggedResource {
+	tags := parseResourceTagsHCL(body)
+	missingTags := findMissingTags(tags)
+	
+	if len(missingTags) > 0 {
+		return &UntaggedResource{
+			ResourceType: resourceType,
+			Name:         resourceName,
+			MissingTags:  missingTags,
+		}
+	}
+	return nil
+}
+
+func findMissingTags(tags map[string]string) []string {
+	var missingTags []string
+	for _, requiredTag := range mandatoryTags {
+		if _, exists := tags[requiredTag]; !exists {
+			missingTags = append(missingTags, requiredTag)
+		}
+	}
+	return missingTags
+}
+
+func parseResourceTagsHCL(body *hclsyntax.Body) map[string]string {
 	tags := make(map[string]string)
 
-	tagsRegex := regexp.MustCompile(`(?s)tags\s*=\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}`)
-	tagsMatch := tagsRegex.FindStringSubmatch(resourceBody)
-
-	if len(tagsMatch) >= 2 {
-		tagsContent := tagsMatch[1]
-
-		tagRegex := regexp.MustCompile(`"([^"]+)"\s*=\s*"([^"]*)"`)
-		tagMatches := tagRegex.FindAllStringSubmatch(tagsContent, -1)
-
-		for _, tagMatch := range tagMatches {
-			if len(tagMatch) >= 3 {
-				tags[tagMatch[1]] = tagMatch[2]
+	if attr, exists := body.Attributes["tags"]; exists {
+		if tagsExpr, ok := attr.Expr.(*hclsyntax.ObjectConsExpr); ok {
+			for _, item := range tagsExpr.Items {
+				var key, value string
+				
+				// Extract key
+				if keyVal, diags := item.KeyExpr.Value(nil); !diags.HasErrors() && keyVal.Type() == cty.String {
+					key = keyVal.AsString()
+				}
+				
+				// Extract value
+				if valueVal, diags := item.ValueExpr.Value(nil); !diags.HasErrors() && valueVal.Type() == cty.String {
+					value = valueVal.AsString()
+				}
+				
+				if key != "" {
+					tags[key] = value
+				}
 			}
 		}
 	}
@@ -290,29 +439,52 @@ func parseResourceTags(resourceBody string) map[string]string {
 	return tags
 }
 
-func parseVariables(content string) []VariableDefinition {
-	variableRegex := regexp.MustCompile(`(?s)variable\s+"([^"]+)"\s*\{([^}]*)\}`)
-	matches := variableRegex.FindAllStringSubmatch(content, -1)
+func parseVariables(content string, filename string) []VariableDefinition {
+	body := parseHCLBody(content, filename)
+	if body == nil {
+		return []VariableDefinition{}
+	}
 
-	return lo.Map(matches, func(match []string, _ int) VariableDefinition {
-		variableName := match[1]
-		variableBody := match[2]
-		hasDefault := strings.Contains(variableBody, "default")
-
-		return VariableDefinition{
-			Name:       variableName,
-			HasDefault: hasDefault,
-		}
-	})
+	return extractVariableDefinitions(body)
 }
 
-func parseOutputs(content string) []string {
-	outputRegex := regexp.MustCompile(`(?s)output\s+"([^"]+)"\s*\{([^}]*)\}`)
-	matches := outputRegex.FindAllStringSubmatch(content, -1)
+func extractVariableDefinitions(body *hclsyntax.Body) []VariableDefinition {
+	var variables []VariableDefinition
+	for _, block := range body.Blocks {
+		if block.Type == "variable" && len(block.Labels) > 0 {
+			variables = append(variables, createVariableDefinition(block))
+		}
+	}
+	return variables
+}
 
-	return lo.Map(matches, func(match []string, _ int) string {
-		return match[1]
-	})
+func createVariableDefinition(block *hclsyntax.Block) VariableDefinition {
+	variableName := block.Labels[0]
+	_, hasDefault := block.Body.Attributes["default"]
+	
+	return VariableDefinition{
+		Name:       variableName,
+		HasDefault: hasDefault,
+	}
+}
+
+func parseOutputs(content string, filename string) []string {
+	body := parseHCLBody(content, filename)
+	if body == nil {
+		return []string{}
+	}
+
+	return extractOutputNames(body)
+}
+
+func extractOutputNames(body *hclsyntax.Body) []string {
+	var outputs []string
+	for _, block := range body.Blocks {
+		if block.Type == "output" && len(block.Labels) > 0 {
+			outputs = append(outputs, block.Labels[0])
+		}
+	}
+	return outputs
 }
 
 func loadFileContent(path string) ([]byte, error) {
@@ -321,17 +493,20 @@ func loadFileContent(path string) ([]byte, error) {
 
 
 func analyzeRepositoryWithRecovery(repoPath string, logger *slog.Logger) (RepositoryAnalysis, error) {
-	var allProviders []ProviderDetail
-	var allModules []ModuleDetail
-	var allResourceTypes []ResourceType
-	var allUntaggedResources []UntaggedResource
-	var allVariables []VariableDefinition
-	var allOutputs []string
-	var backend *BackendConfig
+	rawData, err := processRepositoryFiles(repoPath, logger)
+	if err != nil {
+		return RepositoryAnalysis{RepositoryPath: repoPath}, err
+	}
 
-	filesProcessed := 0
-	filesSkipped := 0
-	filesErrored := 0
+	analysis := aggregateAnalysisData(rawData)
+	analysis.RepositoryPath = repoPath
+	
+	return analysis, nil
+}
+
+func processRepositoryFiles(repoPath string, logger *slog.Logger) (RawAnalysisData, error) {
+	data := RawAnalysisData{}
+	stats := FileProcessingStats{}
 
 	err := filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -339,171 +514,206 @@ func analyzeRepositoryWithRecovery(repoPath string, logger *slog.Logger) (Reposi
 			return err
 		}
 		
-		if d.IsDir() || shouldSkipPath(path) {
-			return nil
-		}
-		
-		if !isRelevantFile(path) {
-			filesSkipped++
-			return nil
-		}
-
-		content, readErr := loadFileContent(path)
-		if readErr != nil {
-			logger.Debug("Failed to read file, skipping", "path", path, "error", readErr)
-			filesErrored++
-			return nil // Continue processing other files
-		}
-
-		contentStr := string(content)
-		
-		// Parse with error recovery for each section
-		if backend == nil {
-			if parsedBackend := parseBackendSafely(contentStr, logger); parsedBackend != nil {
-				backend = parsedBackend
-			}
-		}
-
-		if providers := parseProvidersSafely(contentStr, logger); len(providers) > 0 {
-			allProviders = append(allProviders, providers...)
-		}
-		
-		if modules := parseModulesSafely(contentStr, logger); len(modules) > 0 {
-			allModules = append(allModules, modules...)
-		}
-
-		resourceTypes, untaggedResources := parseResourcesSafely(contentStr, logger)
-		allResourceTypes = append(allResourceTypes, resourceTypes...)
-		allUntaggedResources = append(allUntaggedResources, untaggedResources...)
-
-		if variables := parseVariablesSafely(contentStr, logger); len(variables) > 0 {
-			allVariables = append(allVariables, variables...)
-		}
-		
-		if outputs := parseOutputsSafely(contentStr, logger); len(outputs) > 0 {
-			allOutputs = append(allOutputs, outputs...)
-		}
-
-		filesProcessed++
-		return nil
+		return processFileEntry(path, d, &data, &stats, logger)
 	})
 
-	logger.Debug("Repository analysis stats", 
-		"files_processed", filesProcessed,
-		"files_skipped", filesSkipped,
-		"files_errored", filesErrored)
+	logFileProcessingStats(stats, logger)
+	return data, err
+}
 
-	if err != nil {
-		return RepositoryAnalysis{RepositoryPath: repoPath}, fmt.Errorf("failed to walk directory: %w", err)
+func processFileEntry(path string, d fs.DirEntry, data *RawAnalysisData, stats *FileProcessingStats, logger *slog.Logger) error {
+	if d.IsDir() || shouldSkipPath(path) {
+		return nil
+	}
+	
+	if !isRelevantFile(path) {
+		stats.FilesSkipped++
+		return nil
 	}
 
-	// Aggregate and deduplicate
-	uniqueProviders := lo.UniqBy(allProviders, func(p ProviderDetail) string {
+	content, readErr := loadFileContent(path)
+	if readErr != nil {
+		logger.Debug("Failed to read file, skipping", "path", path, "error", readErr)
+		stats.FilesErrored++
+		return nil
+	}
+
+	parseFileContent(string(content), path, data, logger)
+	stats.FilesProcessed++
+	return nil
+}
+
+func parseFileContent(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	parseBackendData(content, path, data, logger)
+	parseProviderData(content, path, data, logger)
+	parseModuleData(content, path, data, logger)
+	parseResourceData(content, path, data, logger)
+	parseVariableData(content, path, data, logger)
+	parseOutputData(content, path, data, logger)
+}
+
+func parseBackendData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	if data.Backend == nil {
+		if parsedBackend := parseBackendSafely(content, path, logger); parsedBackend != nil {
+			data.Backend = parsedBackend
+		}
+	}
+}
+
+func parseProviderData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	if providers := parseProvidersSafely(content, path, logger); len(providers) > 0 {
+		data.Providers = append(data.Providers, providers...)
+	}
+}
+
+func parseModuleData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	if modules := parseModulesSafely(content, path, logger); len(modules) > 0 {
+		data.Modules = append(data.Modules, modules...)
+	}
+}
+
+func parseResourceData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	resourceTypes, untaggedResources := parseResourcesSafely(content, path, logger)
+	data.ResourceTypes = append(data.ResourceTypes, resourceTypes...)
+	data.UntaggedResources = append(data.UntaggedResources, untaggedResources...)
+}
+
+func parseVariableData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	if variables := parseVariablesSafely(content, path, logger); len(variables) > 0 {
+		data.Variables = append(data.Variables, variables...)
+	}
+}
+
+func parseOutputData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
+	if outputs := parseOutputsSafely(content, path, logger); len(outputs) > 0 {
+		data.Outputs = append(data.Outputs, outputs...)
+	}
+}
+
+func aggregateAnalysisData(data RawAnalysisData) RepositoryAnalysis {
+	return RepositoryAnalysis{
+		BackendConfig:    data.Backend,
+		Providers:       aggregateProviders(data.Providers),
+		Modules:         aggregateModules(data.Modules),
+		ResourceAnalysis: aggregateResources(data.ResourceTypes, data.UntaggedResources),
+		VariableAnalysis: VariableAnalysis{DefinedVariables: data.Variables},
+		OutputAnalysis:   OutputAnalysis{OutputCount: len(data.Outputs), Outputs: data.Outputs},
+	}
+}
+
+func aggregateProviders(providers []ProviderDetail) ProvidersAnalysis {
+	uniqueProviders := lo.UniqBy(providers, func(p ProviderDetail) string {
 		return fmt.Sprintf("%s@%s", p.Source, p.Version)
 	})
+	
+	return ProvidersAnalysis{
+		UniqueProviderCount: len(uniqueProviders),
+		ProviderDetails:     uniqueProviders,
+	}
+}
 
+func aggregateModules(modules []ModuleDetail) ModulesAnalysis {
 	moduleCountMap := make(map[string]int)
 	totalModuleCalls := 0
-	for _, module := range allModules {
+	
+	for _, module := range modules {
 		moduleCountMap[module.Source] += module.Count
 		totalModuleCalls += module.Count
 	}
+	
 	uniqueModules := lo.MapToSlice(moduleCountMap, func(source string, count int) ModuleDetail {
 		return ModuleDetail{Source: source, Count: count}
 	})
+	
+	return ModulesAnalysis{
+		TotalModuleCalls:  totalModuleCalls,
+		UniqueModuleCount: len(uniqueModules),
+		UniqueModules:     uniqueModules,
+	}
+}
 
+func aggregateResources(resourceTypes []ResourceType, untaggedResources []UntaggedResource) ResourceAnalysis {
 	resourceTypeCountMap := make(map[string]int)
-	for _, resourceType := range allResourceTypes {
+	for _, resourceType := range resourceTypes {
 		resourceTypeCountMap[resourceType.Type] += resourceType.Count
 	}
+	
 	aggregatedResourceTypes := lo.MapToSlice(resourceTypeCountMap, func(resType string, count int) ResourceType {
 		return ResourceType{Type: resType, Count: count}
 	})
+	
 	totalResourceCount := lo.Reduce(aggregatedResourceTypes, func(acc int, rt ResourceType, _ int) int {
 		return acc + rt.Count
 	}, 0)
+	
+	return ResourceAnalysis{
+		TotalResourceCount:      totalResourceCount,
+		UniqueResourceTypeCount: len(aggregatedResourceTypes),
+		ResourceTypes:           aggregatedResourceTypes,
+		UntaggedResources:       untaggedResources,
+	}
+}
 
-	return RepositoryAnalysis{
-		RepositoryPath: repoPath,
-		BackendConfig:  backend,
-		Providers: ProvidersAnalysis{
-			UniqueProviderCount: len(uniqueProviders),
-			ProviderDetails:     uniqueProviders,
-		},
-		Modules: ModulesAnalysis{
-			TotalModuleCalls:  totalModuleCalls,
-			UniqueModuleCount: len(uniqueModules),
-			UniqueModules:     uniqueModules,
-		},
-		ResourceAnalysis: ResourceAnalysis{
-			TotalResourceCount:      totalResourceCount,
-			UniqueResourceTypeCount: len(aggregatedResourceTypes),
-			ResourceTypes:           aggregatedResourceTypes,
-			UntaggedResources:       allUntaggedResources,
-		},
-		VariableAnalysis: VariableAnalysis{
-			DefinedVariables: allVariables,
-		},
-		OutputAnalysis: OutputAnalysis{
-			OutputCount: len(allOutputs),
-			Outputs:     allOutputs,
-		},
-	}, nil
+func logFileProcessingStats(stats FileProcessingStats, logger *slog.Logger) {
+	logger.Debug("Repository analysis stats", 
+		"files_processed", stats.FilesProcessed,
+		"files_skipped", stats.FilesSkipped,
+		"files_errored", stats.FilesErrored)
 }
 
 // Safe parsing functions with error recovery
-func parseBackendSafely(content string, logger *slog.Logger) *BackendConfig {
+func parseBackendSafely(content string, filename string, logger *slog.Logger) *BackendConfig {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Backend parsing panic recovered", "panic", r)
+			logger.Debug("Backend parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseBackend(content)
+	return parseBackend(content, filename)
 }
 
-func parseProvidersSafely(content string, logger *slog.Logger) []ProviderDetail {
+func parseProvidersSafely(content string, filename string, logger *slog.Logger) []ProviderDetail {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Provider parsing panic recovered", "panic", r)
+			logger.Debug("Provider parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseProviders(content)
+	return parseProviders(content, filename)
 }
 
-func parseModulesSafely(content string, logger *slog.Logger) []ModuleDetail {
+func parseModulesSafely(content string, filename string, logger *slog.Logger) []ModuleDetail {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Module parsing panic recovered", "panic", r)
+			logger.Debug("Module parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseModules(content)
+	return parseModules(content, filename)
 }
 
-func parseResourcesSafely(content string, logger *slog.Logger) ([]ResourceType, []UntaggedResource) {
+func parseResourcesSafely(content string, filename string, logger *slog.Logger) ([]ResourceType, []UntaggedResource) {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Resource parsing panic recovered", "panic", r)
+			logger.Debug("Resource parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseResources(content)
+	return parseResources(content, filename)
 }
 
-func parseVariablesSafely(content string, logger *slog.Logger) []VariableDefinition {
+func parseVariablesSafely(content string, filename string, logger *slog.Logger) []VariableDefinition {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Variable parsing panic recovered", "panic", r)
+			logger.Debug("Variable parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseVariables(content)
+	return parseVariables(content, filename)
 }
 
-func parseOutputsSafely(content string, logger *slog.Logger) []string {
+func parseOutputsSafely(content string, filename string, logger *slog.Logger) []string {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Output parsing panic recovered", "panic", r)
+			logger.Debug("Output parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseOutputs(content)
+	return parseOutputs(content, filename)
 }
 
 

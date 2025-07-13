@@ -94,7 +94,7 @@ func createConfigFromEnv(envVars map[string]string) Config {
 	}
 }
 
-func validateConfig(config Config) error {
+func validateAnalysisConfiguration(config Config) error {
 	if config.MaxGoroutines <= 0 {
 		return fmt.Errorf("MaxGoroutines must be positive, got %d", config.MaxGoroutines)
 	}
@@ -140,17 +140,10 @@ func readDirectory(path string) ([]os.DirEntry, error) {
 	return os.ReadDir(path)
 }
 
-func logProgress(message string, args ...interface{}) {
-	slog.Info(fmt.Sprintf(message, args...))
-}
-
-func logError(err error) {
-	slog.Error("operation failed", "error", err)
-}
 
 
 func createProcessingContext(config Config) (ProcessingContext, error) {
-	validationErr := validateConfig(config)
+	validationErr := validateAnalysisConfiguration(config)
 	if validationErr != nil {
 		return ProcessingContext{}, validationErr
 	}
@@ -188,7 +181,9 @@ func discoverRepositories(tempDir, org string) ([]Repository, error) {
 		return createRepository(name, orgDir, org)
 	})
 
-	logProgress("Found %d repositories to process in %s", len(repositories), org)
+	slog.Info("Repositories discovered", 
+		"repository_count", len(repositories), 
+		"organization", org)
 	return repositories, nil
 }
 
@@ -289,7 +284,7 @@ func logRepositoryResultStructured(result AnalysisResult, logger *slog.Logger) {
 }
 
 
-func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger) []AnalysisResult {
+func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger, tuiProgress *TUIProgressChannel, totalRepos int) []AnalysisResult {
 	var allResults []AnalysisResult
 	successful := 0
 	failed := 0
@@ -305,6 +300,11 @@ func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger
 		} else {
 			successful++
 			logRepositoryResultStructured(result, logger)
+		}
+		
+		// Update TUI progress
+		if tuiProgress != nil {
+			tuiProgress.UpdateProgress(result.RepoName, result.Organization, len(allResults), totalRepos)
 		}
 		
 		if len(allResults)%50 == 0 {
@@ -347,12 +347,12 @@ func calculateStats(allResults []AnalysisResult, duration time.Duration) Process
 }
 
 func logStats(stats ProcessingStats) {
-	logProgress("\n=== Processing Complete ===")
-	logProgress("Total repositories: %d", stats.TotalRepos)
-	logProgress("Successfully processed: %d", stats.ProcessedRepos)
-	logProgress("Failed: %d", stats.FailedRepos)
-	logProgress("Total files extracted: %d", stats.TotalFiles)
-	logProgress("Total duration: %v", stats.Duration)
+	slog.Info("Processing statistics",
+		"total_repositories", stats.TotalRepos,
+		"successfully_processed", stats.ProcessedRepos,
+		"failed", stats.FailedRepos,
+		"total_files_extracted", stats.TotalFiles,
+		"duration", stats.Duration)
 }
 
 func finalizeProcessing(allResults []AnalysisResult, startTime time.Time) {
@@ -361,7 +361,7 @@ func finalizeProcessing(allResults []AnalysisResult, startTime time.Time) {
 }
 
 
-func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx context.Context, processingCtx ProcessingContext, logger *slog.Logger) []AnalysisResult {
+func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx context.Context, processingCtx ProcessingContext, logger *slog.Logger, tuiProgress *TUIProgressChannel) []AnalysisResult {
 	startTime := time.Now()
 
 	logger.Info("Starting concurrent repository processing with timeout", 
@@ -384,14 +384,14 @@ func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx c
 	submitRepositoryJobsWithTimeout(repositories, ctx, p, processingCtx.Pool, results, logger)
 	waitAndCloseChannel(p, results)
 
-	allResults := collectResultsWithRecovery(results, logger)
+	allResults := collectResultsWithRecovery(results, logger, tuiProgress, len(repositories))
 	finalizeProcessing(allResults, startTime)
 
 	return allResults
 }
 
 
-func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingContext, reporter *Reporter) error {
+func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingContext, reporter *Reporter, tuiProgress *TUIProgressChannel) error {
 	startTime := time.Now()
 	successfulOrgs := 0
 	failedOrgs := 0
@@ -406,7 +406,7 @@ func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingCo
 		orgLogger.Info("Processing organization")
 
 		// Attempt organization processing with recovery
-		if err := processOrganizationWithRecovery(ctx, org, processingCtx, reporter, orgLogger); err != nil {
+		if err := processOrganizationWithRecovery(ctx, org, processingCtx, reporter, orgLogger, tuiProgress); err != nil {
 			orgLogger.Error("Organization processing failed completely", "error", err)
 			failedOrgs++
 			continue
@@ -428,7 +428,7 @@ func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingCo
 	return nil
 }
 
-func processOrganizationWithRecovery(ctx context.Context, org string, processingCtx ProcessingContext, reporter *Reporter, logger *slog.Logger) error {
+func processOrganizationWithRecovery(ctx context.Context, org string, processingCtx ProcessingContext, reporter *Reporter, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
 	var tempDir string
 	var cleanup func()
 	var setupErr error
@@ -476,7 +476,7 @@ func processOrganizationWithRecovery(ctx context.Context, org string, processing
 	analysisCtx, analysisCancel := context.WithTimeout(ctx, processingCtx.Config.ProcessTimeout)
 	defer analysisCancel()
 	
-	results := processRepositoriesConcurrentlyWithTimeout(repositories, analysisCtx, processingCtx, logger)
+	results := processRepositoriesConcurrentlyWithTimeout(repositories, analysisCtx, processingCtx, logger, tuiProgress)
 	reporter.AddResults(results)
 
 	logger.Info("Organization processing completed", "repositories_found", len(repositories))
@@ -502,18 +502,16 @@ func createTimeoutContext(timeout time.Duration) (context.Context, context.Cance
 }
 
 func handleApplicationError(err error) {
-	logError(err)
+	slog.Error("Application error", "error", err)
 }
 
 func logConfiguration(config Config) {
-	logProgress("Configuration loaded:")
-	logProgress("  Organizations: %v", config.Organizations)
-	logProgress("  Max Goroutines: %d", config.MaxGoroutines)
-	logProgress("  Clone Concurrency: %d", config.CloneConcurrency)
-	logProgress("  GitHub Token: %s", maskToken(config.GitHubToken))
-	if config.BaseURL != "" {
-		logProgress("  Base URL: %s", config.BaseURL)
-	}
+	slog.Info("Configuration loaded",
+		"organizations", config.Organizations,
+		"max_goroutines", config.MaxGoroutines,
+		"clone_concurrency", config.CloneConcurrency,
+		"github_token", maskToken(config.GitHubToken),
+		"base_url", config.BaseURL)
 }
 
 func maskToken(token string) string {
@@ -523,57 +521,6 @@ func maskToken(token string) string {
 	return token[:4] + "..." + token[len(token)-4:]
 }
 
-func runApplication() {
-	// Initialize structured logging
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-		AddSource: true,
-	}))
-	slog.SetDefault(logger)
-
-	logger.Info("Starting tf-analyzer application")
-
-	config, configErr := loadEnvironmentConfig(".env")
-	if configErr != nil {
-		handleApplicationError(fmt.Errorf("failed to load configuration: %w", configErr))
-		return
-	}
-
-	logConfiguration(config)
-
-	processingCtx, ctxErr := createProcessingContext(config)
-	if ctxErr != nil {
-		handleApplicationError(fmt.Errorf("failed to create processing context: %w", ctxErr))
-		return
-	}
-	defer releaseProcessingContext(processingCtx)
-
-	ctx, cancel := createTimeoutContext(config.ProcessTimeout)
-	defer cancel()
-
-	reporter := NewReporter()
-	analysisErr := cloneAndAnalyzeMultipleOrgs(ctx, processingCtx, reporter)
-	if analysisErr != nil {
-		logger.Error("Analysis completed with errors", "error", analysisErr)
-		// Don't return - still try to generate reports for successful organizations
-	}
-
-	// Generate and display comprehensive report
-	if err := reporter.PrintSummaryReport(); err != nil {
-		logger.Error("Failed to print summary report", "error", err)
-	}
-	
-	// Export detailed reports
-	if err := reporter.ExportJSON("terraform-analysis-report.json"); err != nil {
-		logger.Error("Failed to export JSON report", "error", err)
-	}
-	if err := reporter.ExportCSV("terraform-analysis-report.csv"); err != nil {
-		logger.Error("Failed to export CSV report", "error", err)
-	}
-
-	logger.Info("tf-analyzer application completed")
-}
-
 func main() {
-	runApplication()
+	Execute()
 }

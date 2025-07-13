@@ -1,9 +1,0 @@
-# See the dedicated "version" documentation section.
-version: "2"
-linters:
-  settings:
-    cyclop:
-      max-complexity: 6
-  default: standard
-issues:
-  fix: true

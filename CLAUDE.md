@@ -39,26 +39,26 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 ## Development Commands
 
 ### Essential Commands
-- `make build` - Build the application
-- `make test` - Run all tests
-- `make lint` - Run golangci-lint with complexity checks
-- `make run` - Run the application
-- `make ci` - Run full CI pipeline (lint + test)
+- `task build` - Build the application
+- `task test` - Run all tests
+- `task lint` - Run golangci-lint with complexity checks
+- `task run` - Run the application
+- `task ci` - Run full CI pipeline (lint + test)
 
 ### Development Setup
-- `make init` - Initialize project and install tools
-- `make install-tools` - Install golangci-lint and development tools
-- `make deps` - Download dependencies
+- `task init` - Initialize project and install tools
+- `task install-tools` - Install golangci-lint and development tools
+- `task deps` - Download dependencies
 
 ### Code Quality
-- `make lint-fix` - Auto-fix linting issues
-- `make coverage` - Generate test coverage report
-- `make sec` - Run security checks
+- `task lint-fix` - Auto-fix linting issues
+- `task coverage` - Generate test coverage report
+- `task sec` - Run security checks
 
 ### Performance
-- `make bench` - Run benchmarks
-- `make profile-cpu` - CPU profiling
-- `make profile-mem` - Memory profiling
+- `task bench` - Run benchmarks
+- `task profile-cpu` - CPU profiling
+- `task profile-mem` - Memory profiling
 
 ## Project Configuration
 

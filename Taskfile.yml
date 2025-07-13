@@ -62,6 +62,33 @@ tasks:
       - go test -coverprofile=coverage.out ./...
       - go tool cover -html=coverage.out -o coverage.html
       - echo "Coverage report generated{{":"}} coverage.html"
+      - go tool cover -func=coverage.out | tail -1
+
+  coverage-check:
+    desc: Check coverage meets 80% threshold
+    cmds:
+      - echo "Checking coverage threshold..."
+      - go test -coverprofile=coverage.out ./...
+      - |
+        coverage=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+        threshold=80
+        if (( $(echo "$coverage < $threshold" | bc -l) )); then
+          echo "Coverage $coverage% is below threshold $threshold%"
+          exit 1
+        else
+          echo "Coverage $coverage% meets threshold $threshold%"
+        fi
+
+  mutation:
+    desc: Run mutation testing
+    cmds:
+      - echo "Running mutation testing..."
+      - |
+        if ! which go-mutesting > /dev/null; then
+          echo "Installing go-mutesting..."
+          go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+        fi
+      - go-mutesting
 
   bench:
     desc: Run benchmarks
