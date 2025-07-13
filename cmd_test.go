@@ -855,6 +855,11 @@ func TestSetupTUIIfEnabled(t *testing.T) {
 // TestExecuteAnalysisWorkflow tests workflow execution
 func TestExecuteAnalysisWorkflow(t *testing.T) {
 	t.Run("handles context cancellation", func(t *testing.T) {
+		// Skip this test in short mode as it involves external operations
+		if testing.Short() {
+			t.Skip("Skipping workflow integration test in short mode")
+		}
+		
 		// Given: cancelled context
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately

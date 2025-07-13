@@ -198,11 +198,36 @@ func printReportFooter() {
 }
 
 func extractRepoName(path string) string {
-	parts := strings.Split(path, "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
+	if path == "" {
+		return ""
 	}
-	return path
+	
+	// Clean trailing slashes
+	cleanPath := strings.TrimRight(path, "/\\")
+	if cleanPath == "" {
+		return ""
+	}
+	
+	// Handle both Unix-style (/) and Windows-style (\) path separators
+	// Split on both and take the last non-empty part
+	var parts []string
+	
+	// First split on forward slashes
+	unixParts := strings.Split(cleanPath, "/")
+	for _, part := range unixParts {
+		// Then split each part on backslashes (for Windows paths)
+		winParts := strings.Split(part, "\\")
+		parts = append(parts, winParts...)
+	}
+	
+	// Find the last non-empty part
+	for i := len(parts) - 1; i >= 0; i-- {
+		if strings.TrimSpace(parts[i]) != "" {
+			return parts[i]
+		}
+	}
+	
+	return ""
 }
 
 func calculateTotalProviders(repositories []RepositoryAnalysis) int {

@@ -111,7 +111,7 @@ type FileProcessingStats struct {
 	FilesErrored   int
 }
 
-var mandatoryTags = []string{"Environment", "Owner", "Project"}
+var mandatoryTags = []string{"Environment", "Owner", "Project", "CostCenter"}
 
 func isRelevantFile(path string) bool {
 	lower := strings.ToLower(path)
@@ -121,7 +121,30 @@ func isRelevantFile(path string) bool {
 }
 
 func shouldSkipPath(path string) bool {
-	return strings.Contains(path, "/.git/")
+	// Security: Skip version control directories
+	if strings.Contains(path, "/.git/") || strings.HasPrefix(path, ".git/") {
+		return true
+	}
+	
+	// Security: Skip dependency directories that may contain malicious code
+	if strings.Contains(path, "/node_modules/") {
+		return true
+	}
+	
+	if strings.Contains(path, "/vendor/") {
+		return true
+	}
+	
+	// Security: Skip cache and temporary directories
+	if strings.Contains(path, "/__pycache__/") || strings.HasPrefix(path, "__pycache__/") {
+		return true
+	}
+	
+	if strings.Contains(path, "/tmp/") || strings.HasPrefix(path, "tmp/") {
+		return true
+	}
+	
+	return false
 }
 
 func parseBackend(content string, filename string) *BackendConfig {
@@ -404,7 +427,9 @@ func checkResourceTags(body *hclsyntax.Body, resourceType, resourceName string) 
 func findMissingTags(tags map[string]string) []string {
 	var missingTags []string
 	for _, requiredTag := range mandatoryTags {
-		if _, exists := tags[requiredTag]; !exists {
+		value, exists := tags[requiredTag]
+		// Tag is missing if it doesn't exist OR if the value is empty/whitespace-only
+		if !exists || strings.TrimSpace(value) == "" {
 			missingTags = append(missingTags, requiredTag)
 		}
 	}

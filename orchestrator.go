@@ -107,15 +107,29 @@ func validateAnalysisConfiguration(config Config) error {
 	if config.MaxGoroutines <= 0 {
 		return fmt.Errorf("MaxGoroutines must be positive, got %d", config.MaxGoroutines)
 	}
+	
+	// Security: Prevent resource exhaustion attacks
+	if config.MaxGoroutines > 10000 {
+		return fmt.Errorf("MaxGoroutines too high (max 10000 for safety), got %d", config.MaxGoroutines)
+	}
+	
 	if config.CloneConcurrency <= 0 {
 		return fmt.Errorf("CloneConcurrency must be positive, got %d", config.CloneConcurrency)
 	}
+	
+	// Security: Prevent excessive clone concurrency
+	if config.CloneConcurrency > 100 {
+		return fmt.Errorf("CloneConcurrency too high (max 100 for safety), got %d", config.CloneConcurrency)
+	}
+	
 	if config.GitHubToken == "" {
-		return fmt.Errorf("GITHUB_TOKEN is required")
+		return fmt.Errorf("GitHubToken is required")
 	}
+	
 	if len(config.Organizations) == 0 {
-		return fmt.Errorf("at least one organization must be specified in GITHUB_ORGS")
+		return fmt.Errorf("at least one organization must be specified")
 	}
+	
 	return nil
 }
 

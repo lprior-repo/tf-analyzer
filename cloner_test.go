@@ -448,7 +448,13 @@ func TestFindOrgDirectory(t *testing.T) {
 // TestExecuteCloneCommandWithRecovery tests clone command execution
 func TestExecuteCloneCommandWithRecovery(t *testing.T) {
 	t.Run("handles command execution gracefully", func(t *testing.T) {
-		// Given: a clone operation (will fail but should not panic)
+		// Skip this test in CI/automated environments where real GitHub calls would fail
+		if testing.Short() {
+			t.Skip("Skipping GitHub API integration test in short mode")
+		}
+		
+		// This test validates error handling and recovery, not successful cloning
+		// Given: a clone operation with invalid token (expected to fail gracefully)
 		op := CloneOperation{
 			Org:     "test-org",
 			TempDir: t.TempDir(),
@@ -461,9 +467,15 @@ func TestExecuteCloneCommandWithRecovery(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 		// When: executeCloneCommandWithRecovery is called
-		// Then: should not panic (will likely fail but gracefully)
-		if err := executeCloneCommandWithRecovery(ctx, op, logger); err != nil {
-			t.Logf("Expected error for fake token: %v", err)
+		// Then: should not panic and should return an error (graceful failure)
+		err := executeCloneCommandWithRecovery(ctx, op, logger)
+		if err == nil {
+			t.Error("Expected error for invalid token, but got nil")
+		}
+		
+		// Verify error contains expected GitHub authentication failure
+		if !strings.Contains(err.Error(), "401") && !strings.Contains(err.Error(), "Bad credentials") {
+			t.Logf("Expected GitHub authentication error, got: %v", err)
 		}
 	})
 }
@@ -486,7 +498,13 @@ func TestSetupWorkspaceWithRecovery(t *testing.T) {
 // TestExecuteClonePhaseWithRecovery tests clone phase execution
 func TestExecuteClonePhaseWithRecovery(t *testing.T) {
 	t.Run("executes clone phase", func(t *testing.T) {
-		// Given: a clone operation
+		// Skip this test in CI/automated environments where real GitHub calls would fail
+		if testing.Short() {
+			t.Skip("Skipping GitHub API integration test in short mode")
+		}
+		
+		// This test validates error handling in clone phase
+		// Given: a clone operation with invalid token (expected to fail gracefully)
 		op := CloneOperation{
 			Org:     "test-org",
 			TempDir: t.TempDir(),

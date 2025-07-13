@@ -380,6 +380,7 @@ func TestExportJSON(t *testing.T) {
 					RepoName:     "test-repo",
 					Organization: "test-org",
 					Analysis: RepositoryAnalysis{
+						RepositoryPath:   "path/to/test-repo",
 						ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
 					},
 				},
@@ -410,7 +411,7 @@ func TestExportJSON(t *testing.T) {
 		// Should contain expected data
 		jsonStr := string(content)
 		if !strings.Contains(jsonStr, "test-repo") {
-			t.Error("JSON should contain repository name")
+			t.Errorf("JSON should contain repository name 'test-repo', but got: %s", jsonStr)
 		}
 	})
 }
@@ -425,6 +426,7 @@ func TestExportCSV(t *testing.T) {
 					RepoName:     "test-repo",
 					Organization: "test-org",
 					Analysis: RepositoryAnalysis{
+						RepositoryPath:   "path/to/test-repo",
 						ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
 					},
 				},
@@ -458,7 +460,7 @@ func TestExportCSV(t *testing.T) {
 			t.Error("CSV should contain headers")
 		}
 		if !strings.Contains(csvStr, "test-repo") {
-			t.Error("CSV should contain repository name")
+			t.Errorf("CSV should contain repository name 'test-repo', but got: %s", csvStr)
 		}
 	})
 }
@@ -473,6 +475,7 @@ func TestExportMarkdown(t *testing.T) {
 					RepoName:     "test-repo",
 					Organization: "test-org",
 					Analysis: RepositoryAnalysis{
+						RepositoryPath:   "path/to/test-repo",
 						ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
 					},
 				},
@@ -506,7 +509,7 @@ func TestExportMarkdown(t *testing.T) {
 			t.Error("Markdown should contain headers")
 		}
 		if !strings.Contains(mdStr, "test-repo") {
-			t.Error("Markdown should contain repository name")
+			t.Errorf("Markdown should contain repository name 'test-repo', but got: %s", mdStr)
 		}
 	})
 }
@@ -525,6 +528,7 @@ func TestPrintSummaryReport(t *testing.T) {
 					RepoName:     "test-repo",
 					Organization: "test-org",
 					Analysis: RepositoryAnalysis{
+						RepositoryPath:   "path/to/test-repo",
 						ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
 						Providers:        ProvidersAnalysis{UniqueProviderCount: 2},
 						Modules:          ModulesAnalysis{TotalModuleCalls: 3},
