@@ -61,6 +61,19 @@ tmp/
 /organizations/
 /analysis-output/
 
-# Report files
-*.json
-*.csv
+# Report files (exclude generated reports but keep example configs)
+terraform-analysis-report.json
+terraform-analysis-report.csv
+terraform-analysis-report.html
+
+# Build binary
+tf-analyzer
+
+# But keep markdown reports and mutation testing configuration
+!*.md
+!.go-mutesting.yml
+
+# Mutation testing outputs (exclude generated mutation reports but keep config)
+mutants/
+mutation-report.*
+.mutants/
