@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -203,43 +207,24 @@ func executeCloneCommandWithRecovery(ctx context.Context, op CloneOperation, log
 	return nil
 }
 
+func executeCloneCommandWithRealTimeProgress(ctx context.Context, op CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
+	cmd := buildGhorgCommand(ctx, op)
+	
+	logger.Debug("Executing ghorg command with real-time progress", 
+		"command", cmd.String(),
+		"args", cmd.Args)
+
+	return executeCommandWithProgressTracking(ctx, cmd, op, logger, tuiProgress)
+}
+
 func executeCloneCommandWithProgress(ctx context.Context, op CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
 	if tuiProgress != nil {
 		tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, "Starting clone operation...", 0, 1, 0, 0)
 	}
 
-	// Start a goroutine to show progress during cloning
-	progressDone := make(chan bool)
-	if tuiProgress != nil {
-		go func() {
-			ticker := time.NewTicker(2 * time.Second)
-			defer ticker.Stop()
-			steps := []string{
-				"Fetching repository list...",
-				"Authenticating with GitHub...",
-				"Cloning repositories...",
-				"Processing repositories...",
-			}
-			stepIndex := 0
-			
-			for {
-				select {
-				case <-ticker.C:
-					if stepIndex < len(steps) {
-						tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, steps[stepIndex], stepIndex, len(steps), 0, 0)
-						stepIndex++
-					}
-				case <-progressDone:
-					return
-				}
-			}
-		}()
-	}
-
-	err := executeCloneCommandWithRecovery(ctx, op, logger)
+	err := executeCloneCommandWithRealTimeProgress(ctx, op, logger, tuiProgress)
 	
 	if tuiProgress != nil {
-		progressDone <- true
 		if err != nil {
 			tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, "❌ Clone operation failed", 0, 1, 0, 0)
 		} else {
@@ -301,4 +286,195 @@ func executeClonePhaseWithProgress(ctx context.Context, operation CloneOperation
 		"organization", operation.Org,
 		"duration", time.Since(operation.StartTime))
 	return nil
+}
+
+func executeCommandWithProgressTracking(ctx context.Context, cmd *exec.Cmd, op CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
+	// Check context before starting
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled before starting command: %w", ctx.Err())
+	default:
+	}
+	
+	// Create pipes for stdout and stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start ghorg command: %w", err)
+	}
+
+	// Track progress from both stdout and stderr
+	progressTracker := createProgressTracker(op, logger, tuiProgress)
+	
+	// Use go routines to read from both pipes concurrently
+	done := make(chan error, 2)
+	
+	go func() {
+		done <- progressTracker.trackOutputWithContext(ctx, stdout, "stdout")
+	}()
+	
+	go func() {
+		done <- progressTracker.trackOutputWithContext(ctx, stderr, "stderr") 
+	}()
+
+	// Wait for both goroutines to finish or context cancellation
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		for i := 0; i < 2; i++ {
+			select {
+			case err := <-done:
+				if err != nil {
+					logger.Debug("Output tracking completed", "error", err)
+				}
+			case <-ctx.Done():
+				logger.Debug("Context cancelled during output tracking")
+				return
+			}
+		}
+	}()
+
+	// Wait for command to complete or context cancellation
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-cmdDone:
+		if err != nil {
+			if exitError, ok := err.(*exec.ExitError); ok {
+				logger.Error("ghorg command failed", 
+					"exit_code", exitError.ExitCode(),
+					"organization", op.Org)
+				return fmt.Errorf("ghorg exited with code %d", exitError.ExitCode())
+			}
+			return fmt.Errorf("ghorg command failed: %w", err)
+		}
+	case <-ctx.Done():
+		// Context cancelled - kill the process
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			logger.Warn("Failed to kill process after context cancellation", "error", killErr)
+		}
+		return fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
+
+	// Ensure output tracking completes
+	select {
+	case <-waitDone:
+	case <-time.After(1 * time.Second):
+		logger.Debug("Output tracking timeout")
+	}
+
+	return nil
+}
+
+type ProgressTracker struct {
+	operation   CloneOperation
+	logger      *slog.Logger
+	tuiProgress *TUIProgressChannel
+	repoRegex   *regexp.Regexp
+	totalRepos  int
+	clonedRepos int
+}
+
+func createProgressTracker(op CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) *ProgressTracker {
+	// Regex patterns to match ghorg output
+	repoRegex := regexp.MustCompile(`(?i)(?:cloning|cloned|processing)\s+(?:repository\s+)?([^/\s]+/[^/\s]+)`)
+	
+	return &ProgressTracker{
+		operation:   op,
+		logger:      logger,
+		tuiProgress: tuiProgress,
+		repoRegex:   repoRegex,
+	}
+}
+
+func (pt *ProgressTracker) trackOutputWithContext(ctx context.Context, reader io.Reader, source string) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Split(bufio.ScanLines)
+	
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		
+		pt.logger.Debug("ghorg output", "source", source, "line", line)
+		pt.parseProgressLine(line)
+	}
+	
+	return scanner.Err()
+}
+
+func (pt *ProgressTracker) parseProgressLine(line string) {
+	line = strings.ToLower(line)
+	
+	// Update phase based on ghorg output patterns
+	if strings.Contains(line, "fetching") && strings.Contains(line, "repositories") {
+		pt.updateProgress("Fetching repository list...", 0, 1)
+	} else if strings.Contains(line, "total") && strings.Contains(line, "repositories") {
+		pt.extractTotalRepos(line)
+	} else if strings.Contains(line, "cloning") || strings.Contains(line, "cloned") {
+		repoName := pt.extractRepoName(line)
+		if repoName != "" {
+			pt.clonedRepos++
+			phase := fmt.Sprintf("Cloning: %s", repoName)
+			pt.updateProgress(phase, pt.clonedRepos, pt.totalRepos)
+			pt.logger.Debug("Repository cloned", "repo", repoName, "progress", fmt.Sprintf("%d/%d", pt.clonedRepos, pt.totalRepos))
+		}
+	} else if strings.Contains(line, "authentication") {
+		pt.updateProgress("Authenticating with GitHub...", 0, 1)
+	} else if strings.Contains(line, "complete") || strings.Contains(line, "finished") {
+		pt.updateProgress("Clone operation completed", pt.totalRepos, pt.totalRepos)
+	}
+}
+
+func (pt *ProgressTracker) extractTotalRepos(line string) {
+	// Look for patterns like "found 25 repositories" or "total: 25"
+	re := regexp.MustCompile(`(?:found|total)[\s:]*(\d+)`)
+	matches := re.FindStringSubmatch(line)
+	if len(matches) > 1 {
+		if total, err := strconv.Atoi(matches[1]); err == nil {
+			pt.totalRepos = total
+			pt.updateProgress("Found repositories", 0, total)
+			pt.logger.Info("Total repositories discovered", "count", total, "organization", pt.operation.Org)
+		}
+	}
+}
+
+func (pt *ProgressTracker) extractRepoName(line string) string {
+	matches := pt.repoRegex.FindStringSubmatch(line)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
+}
+
+func (pt *ProgressTracker) updateProgress(phase string, completed, total int) {
+	if pt.tuiProgress != nil {
+		pt.tuiProgress.UpdateProgressWithPhase(
+			pt.operation.Org, 
+			pt.operation.Org, 
+			phase, 
+			completed, 
+			total, 
+			completed, 
+			total)
+	}
 }

@@ -69,8 +69,9 @@ terraform-analysis-report.html
 # Build binary
 tf-analyzer
 
-# But keep markdown reports and mutation testing configuration
+# But keep markdown reports and mutation testing configuration (except analysis reports)
 !*.md
+terraform-analysis-report.md
 
 # Mutation testing outputs (exclude generated mutation reports but keep config)
 mutants/
