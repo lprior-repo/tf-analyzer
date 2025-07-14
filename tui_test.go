@@ -34,34 +34,36 @@ func TestNewTUIProgressChannel(t *testing.T) {
 
 func TestProgressModelInit(t *testing.T) {
 	model := ProgressModel{
-		progress:  progress.New(progress.WithDefaultGradient()),
-		total:     100,
-		completed: 0,
+		progress: progress.New(progress.WithDefaultGradient()),
+		data: ProgressData{
+			Total:     100,
+			Completed: 0,
+		},
 	}
 
-	if model.total != 100 {
-		t.Errorf("Expected total 100, got %d", model.total)
+	if model.data.Total != 100 {
+		t.Errorf("Expected total 100, got %d", model.data.Total)
 	}
 
-	if model.completed != 0 {
-		t.Errorf("Expected completed 0, got %d", model.completed)
+	if model.data.Completed != 0 {
+		t.Errorf("Expected completed 0, got %d", model.data.Completed)
 	}
 
-	if model.done {
+	if model.data.Done {
 		t.Error("Expected done to be false initially")
 	}
 
 	// Test new fields are initialized correctly
-	if model.currentPhase != "" {
-		t.Errorf("Expected currentPhase to be empty initially, got %s", model.currentPhase)
+	if model.data.CurrentPhase != "" {
+		t.Errorf("Expected currentPhase to be empty initially, got %s", model.data.CurrentPhase)
 	}
 
-	if model.repoCount != 0 {
-		t.Errorf("Expected repoCount to be 0 initially, got %d", model.repoCount)
+	if model.data.RepoCount != 0 {
+		t.Errorf("Expected repoCount to be 0 initially, got %d", model.data.RepoCount)
 	}
 
-	if model.totalRepos != 0 {
-		t.Errorf("Expected totalRepos to be 0 initially, got %d", model.totalRepos)
+	if model.data.TotalRepos != 0 {
+		t.Errorf("Expected totalRepos to be 0 initially, got %d", model.data.TotalRepos)
 	}
 }
 
@@ -123,26 +125,30 @@ func TestCompletedMsg(t *testing.T) {
 
 func TestTUIModelInit(t *testing.T) {
 	model := TUIModel{
-		mode: "progress",
-		progress: ProgressModel{
-			progress:  progress.New(progress.WithDefaultGradient()),
-			total:     100,
-			completed: 0,
+		state: TUIState{
+			Mode:   "progress",
+			Width:  80,
+			Height: 24,
 		},
-		width:  80,
-		height: 24,
+		progress: ProgressModel{
+			progress: progress.New(progress.WithDefaultGradient()),
+			data: ProgressData{
+				Total:     100,
+				Completed: 0,
+			},
+		},
 	}
 
-	if model.mode != "progress" {
-		t.Errorf("Expected mode 'progress', got %s", model.mode)
+	if model.state.Mode != "progress" {
+		t.Errorf("Expected mode 'progress', got %s", model.state.Mode)
 	}
 
-	if model.width != 80 {
-		t.Errorf("Expected width 80, got %d", model.width)
+	if model.state.Width != 80 {
+		t.Errorf("Expected width 80, got %d", model.state.Width)
 	}
 
-	if model.height != 24 {
-		t.Errorf("Expected height 24, got %d", model.height)
+	if model.state.Height != 24 {
+		t.Errorf("Expected height 24, got %d", model.state.Height)
 	}
 }
 
@@ -166,22 +172,19 @@ func TestResultsModelInit(t *testing.T) {
 	)
 
 	model := ResultsModel{
-		table:       tbl,
-		results:     []AnalysisResult{},
-		summary:     "Test Summary",
-		showDetails: false,
+		table: tbl,
+		data: ResultsData{
+			Results:     []AnalysisResult{},
+			ShowDetails: false,
+		},
 	}
 
-	if model.summary != "Test Summary" {
-		t.Errorf("Expected summary 'Test Summary', got %s", model.summary)
-	}
-
-	if model.showDetails {
+	if model.data.ShowDetails {
 		t.Error("Expected showDetails to be false initially")
 	}
 
-	if len(model.results) != 0 {
-		t.Errorf("Expected 0 results, got %d", len(model.results))
+	if len(model.data.Results) != 0 {
+		t.Errorf("Expected 0 results, got %d", len(model.data.Results))
 	}
 }
 
@@ -262,11 +265,13 @@ func TestTUIModelModes(t *testing.T) {
 	for _, mode := range validModes {
 		t.Run("mode_"+mode, func(t *testing.T) {
 			model := TUIModel{
-				mode: mode,
+				state: TUIState{
+					Mode: mode,
+				},
 			}
 
-			if model.mode != mode {
-				t.Errorf("Expected mode %s, got %s", mode, model.mode)
+			if model.state.Mode != mode {
+				t.Errorf("Expected mode %s, got %s", mode, model.state.Mode)
 			}
 		})
 	}
@@ -330,11 +335,11 @@ func TestNewTUIModelCritical(t *testing.T) {
 		model := NewTUIModel(totalRepos)
 
 		// Then: should create model with correct initial state
-		if model.mode != "progress" {
-			t.Errorf("Expected mode 'progress', got %s", model.mode)
+		if model.state.Mode != "progress" {
+			t.Errorf("Expected mode 'progress', got %s", model.state.Mode)
 		}
-		if model.progress.total != totalRepos {
-			t.Errorf("Expected total %d, got %d", totalRepos, model.progress.total)
+		if model.progress.data.Total != totalRepos {
+			t.Errorf("Expected total %d, got %d", totalRepos, model.progress.data.Total)
 		}
 	})
 }
@@ -359,8 +364,8 @@ func TestTUIView(t *testing.T) {
 	t.Run("renders view without panic", func(t *testing.T) {
 		// Given: a TUI model with some progress
 		model := NewTUIModel(10)
-		model.progress.completed = 3
-		model.progress.currentRepo = "test-repo"
+		model.progress.data.Completed = 3
+		model.progress.data.CurrentRepo = "test-repo"
 
 		// When: View is called
 		view := model.View()
@@ -374,8 +379,8 @@ func TestTUIView(t *testing.T) {
 	t.Run("renders view in results mode", func(t *testing.T) {
 		// Given: a TUI model in results mode
 		model := NewTUIModel(5)
-		model.mode = "results"
-		model.results.results = []AnalysisResult{
+		model.state.Mode = "results"
+		model.results.data.Results = []AnalysisResult{
 			{RepoName: "repo1", Organization: "org1"},
 			{RepoName: "repo2", Organization: "org1"},
 		}
@@ -395,11 +400,11 @@ func TestRenderProgressView(t *testing.T) {
 	t.Run("renders progress view", func(t *testing.T) {
 		// Given: a TUI model in progress
 		model := NewTUIModel(10)
-		model.progress.completed = 4
-		model.progress.currentRepo = "test-repo"
+		model.progress.data.Completed = 4
+		model.progress.data.CurrentRepo = "test-repo"
 
 		// When: renderProgressView is called
-		view := model.renderProgressView()
+		view := renderProgressView(model.state, model.progress)
 
 		// Then: should return progress view
 		if view == "" {
@@ -413,7 +418,7 @@ func TestRenderResultsView(t *testing.T) {
 	t.Run("renders results view", func(t *testing.T) {
 		// Given: a TUI model with results
 		model := NewTUIModel(3)
-		model.results.results = []AnalysisResult{
+		model.results.data.Results = []AnalysisResult{
 			{
 				RepoName:     "test-repo",
 				Organization: "test-org",
@@ -424,7 +429,7 @@ func TestRenderResultsView(t *testing.T) {
 		}
 
 		// When: renderResultsView is called
-		view := model.renderResultsView()
+		view := renderResultsView(model.state, model.results)
 
 		// Then: should return results view
 		if view == "" {
@@ -654,15 +659,15 @@ func TestProgressWithPhaseUpdate(t *testing.T) {
 // TestEnhancedProgressView tests the enhanced progress view with new fields
 func TestEnhancedProgressView(t *testing.T) {
 	model := NewTUIModel(100)
-	model.progress.currentOrg = "test-org"
-	model.progress.currentRepo = "test-repo"
-	model.progress.currentPhase = "cloning"
-	model.progress.repoCount = 5
-	model.progress.totalRepos = 20
-	model.progress.completed = 25
-	model.progress.total = 100
+	model.progress.data.CurrentOrg = "test-org"
+	model.progress.data.CurrentRepo = "test-repo"
+	model.progress.data.CurrentPhase = "cloning"
+	model.progress.data.RepoCount = 5
+	model.progress.data.TotalRepos = 20
+	model.progress.data.Completed = 25
+	model.progress.data.Total = 100
 
-	view := model.renderProgressView()
+	view := renderProgressView(model.state, model.progress)
 
 	// Check that the view contains enhanced information
 	if !strings.Contains(view, "test-org") {
@@ -689,8 +694,8 @@ func TestEnhancedProgressView(t *testing.T) {
 // TestEnhancedResultsView tests the enhanced results view with statistics
 func TestEnhancedResultsView(t *testing.T) {
 	model := NewTUIModel(10)
-	model.mode = "results"
-	model.progress.results = []AnalysisResult{
+	model.state.Mode = "results"
+	results := []AnalysisResult{
 		{
 			RepoName:     "repo1",
 			Organization: "org1",
@@ -710,9 +715,10 @@ func TestEnhancedResultsView(t *testing.T) {
 			},
 		},
 	}
-	model.results = createResultsModel(model.progress.results)
+	model.progress.data.Results = results
+	model.results = createResultsModel(results)
 
-	view := model.renderResultsView()
+	view := renderResultsView(model.state, model.results)
 
 	// Check that the view contains enhanced statistics
 	if !strings.Contains(view, "✅ Success: 2") {
@@ -749,23 +755,23 @@ func TestTUIModelHandleProgressUpdate(t *testing.T) {
 	updatedModel, _ := model.handleProgressUpdate(msg)
 	tuiModel := updatedModel.(TUIModel)
 
-	if tuiModel.progress.currentRepo != "test-repo" {
-		t.Errorf("Expected currentRepo 'test-repo', got %s", tuiModel.progress.currentRepo)
+	if tuiModel.progress.data.CurrentRepo != "test-repo" {
+		t.Errorf("Expected currentRepo 'test-repo', got %s", tuiModel.progress.data.CurrentRepo)
 	}
 
-	if tuiModel.progress.currentOrg != "test-org" {
-		t.Errorf("Expected currentOrg 'test-org', got %s", tuiModel.progress.currentOrg)
+	if tuiModel.progress.data.CurrentOrg != "test-org" {
+		t.Errorf("Expected currentOrg 'test-org', got %s", tuiModel.progress.data.CurrentOrg)
 	}
 
-	if tuiModel.progress.currentPhase != "analyzing" {
-		t.Errorf("Expected currentPhase 'analyzing', got %s", tuiModel.progress.currentPhase)
+	if tuiModel.progress.data.CurrentPhase != "analyzing" {
+		t.Errorf("Expected currentPhase 'analyzing', got %s", tuiModel.progress.data.CurrentPhase)
 	}
 
-	if tuiModel.progress.repoCount != 10 {
-		t.Errorf("Expected repoCount 10, got %d", tuiModel.progress.repoCount)
+	if tuiModel.progress.data.RepoCount != 10 {
+		t.Errorf("Expected repoCount 10, got %d", tuiModel.progress.data.RepoCount)
 	}
 
-	if tuiModel.progress.totalRepos != 50 {
-		t.Errorf("Expected totalRepos 50, got %d", tuiModel.progress.totalRepos)
+	if tuiModel.progress.data.TotalRepos != 50 {
+		t.Errorf("Expected totalRepos 50, got %d", tuiModel.progress.data.TotalRepos)
 	}
 }

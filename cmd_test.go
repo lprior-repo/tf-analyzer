@@ -1498,9 +1498,9 @@ func TestTUIComponents(t *testing.T) {
 			
 			// Then: should update dimensions without panic
 			if tuiModel, ok := newModel.(TUIModel); ok {
-				if tuiModel.width != size.width || tuiModel.height != size.height {
+				if tuiModel.state.Width != size.width || tuiModel.state.Height != size.height {
 					t.Errorf("Expected dimensions %dx%d, got %dx%d", 
-						size.width, size.height, tuiModel.width, tuiModel.height)
+						size.width, size.height, tuiModel.state.Width, tuiModel.state.Height)
 				}
 			}
 		}
@@ -1523,8 +1523,8 @@ func TestTUIComponents(t *testing.T) {
 			
 			// Then: should update progress without panic
 			if tuiModel, ok := newModel.(TUIModel); ok {
-				if tuiModel.progress.currentRepo != progress.Repo {
-					t.Errorf("Expected repo %s, got %s", progress.Repo, tuiModel.progress.currentRepo)
+				if tuiModel.progress.data.CurrentRepo != progress.Repo {
+					t.Errorf("Expected repo %s, got %s", progress.Repo, tuiModel.progress.data.CurrentRepo)
 				}
 			}
 		}
