@@ -432,14 +432,16 @@ func TestFindMissingTags(t *testing.T) {
 				"Environment": "prod",
 				"Owner":       "team-a",
 				"Project":     "web-app",
+				"CostCenter":  "eng",
 			},
 			expectedMiss: []string{},
 		},
 		{
 			name: "missing Environment tag",
 			tags: map[string]string{
-				"Owner":   "team-a",
-				"Project": "web-app",
+				"Owner":      "team-a",
+				"Project":    "web-app",
+				"CostCenter": "eng",
 			},
 			expectedMiss: []string{"Environment"},
 		},
@@ -448,17 +450,17 @@ func TestFindMissingTags(t *testing.T) {
 			tags: map[string]string{
 				"Name": "my-resource",
 			},
-			expectedMiss: []string{"Environment", "Owner", "Project"},
+			expectedMiss: []string{"Environment", "Owner", "Project", "CostCenter"},
 		},
 		{
 			name:         "no tags provided",
 			tags:         map[string]string{},
-			expectedMiss: []string{"Environment", "Owner", "Project"},
+			expectedMiss: []string{"Environment", "Owner", "Project", "CostCenter"},
 		},
 		{
 			name:         "nil tags map",
 			tags:         nil,
-			expectedMiss: []string{"Environment", "Owner", "Project"},
+			expectedMiss: []string{"Environment", "Owner", "Project", "CostCenter"},
 		},
 	}
 

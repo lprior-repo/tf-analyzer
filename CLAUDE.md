@@ -75,8 +75,9 @@ tf-analyzer is a high-performance Go application designed to concurrently clone 
 ### Environment Variables (.env)
 
 - `GITHUB_TOKEN` - GitHub API token for repository access
-- `MAX_CONCURRENT_CLONES` - Concurrent repository cloning limit
-- `MAX_CONCURRENT_ANALYZERS` - Concurrent file analysis limit
+- `GITHUB_ORGS` - Comma-separated list of GitHub organizations to analyze
+- `CLONE_CONCURRENCY` - Concurrent repository cloning limit (default: 100)
+- `MAX_GOROUTINES` - Maximum concurrent goroutines for file analysis (default: 100)
 - `ANALYZE_EXTENSIONS` - File types to analyze (.md,.tf,.tfvars,.hcl)
 - `GHORG_RECLONE_CONFIG` - Path to ghorg reclone configuration file (default: ~/.config/ghorg/reclone.yaml)
 - `GHORG_CRON_TIMER_MINUTES` - Interval for automated reclone operations (default: 60 minutes)

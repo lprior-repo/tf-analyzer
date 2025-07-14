@@ -19,6 +19,15 @@ import (
 // ORCHESTRATOR - Main workflow coordination and data structures
 // ============================================================================
 
+// Configuration constants
+const (
+	DefaultMaxGoroutines    = 100
+	DefaultCloneConcurrency = 100
+	DefaultProcessTimeout   = 30 * time.Minute
+	MaxSafeMaxGoroutines    = 10000
+	MaxSafeCloneConcurrency = 100
+)
+
 type Config struct {
 	MaxGoroutines    int
 	CloneConcurrency int
@@ -34,6 +43,28 @@ type Repository struct {
 	Name         string
 	Path         string
 	Organization string
+}
+
+// Parameter structures to reduce function parameter counts
+type ProgressUpdate struct {
+	Repo, Org, Phase string
+	Completed, Total, RepoCount, TotalRepos int
+}
+
+type OrgProcessContext struct {
+	Ctx           context.Context
+	Org           string
+	ProcessingCtx ProcessingContext
+	Reporter      *Reporter
+	Logger        *slog.Logger
+	TuiProgress   *TUIProgressChannel
+}
+
+type MultiOrgContext struct {
+	Ctx           context.Context
+	ProcessingCtx ProcessingContext
+	Reporter      *Reporter
+	TuiProgress   *TUIProgressChannel
 }
 
 type FileContent struct {
@@ -83,25 +114,6 @@ func parseOrganizations(orgString string) []string {
 	})
 }
 
-func createConfigFromEnv(envVars map[string]string) Config {
-	getEnvOrDefault := func(key, defaultValue string) string {
-		if value, exists := envVars[key]; exists && value != "" {
-			return value
-		}
-		return defaultValue
-	}
-
-	return Config{
-		MaxGoroutines:    100,
-		CloneConcurrency: 100,
-		ProcessTimeout:   30 * time.Minute,
-		SkipArchived:     true,
-		SkipForks:        false,
-		GitHubToken:      getEnvOrDefault("GITHUB_TOKEN", ""),
-		Organizations:    parseOrganizations(getEnvOrDefault("GITHUB_ORGS", "")),
-		BaseURL:          getEnvOrDefault("GITHUB_BASE_URL", ""),
-	}
-}
 
 func validateAnalysisConfiguration(config Config) error {
 	if config.MaxGoroutines <= 0 {
@@ -109,8 +121,8 @@ func validateAnalysisConfiguration(config Config) error {
 	}
 	
 	// Security: Prevent resource exhaustion attacks
-	if config.MaxGoroutines > 10000 {
-		return fmt.Errorf("MaxGoroutines too high (max 10000 for safety), got %d", config.MaxGoroutines)
+	if config.MaxGoroutines > MaxSafeMaxGoroutines {
+		return fmt.Errorf("MaxGoroutines too high (max %d for safety), got %d", MaxSafeMaxGoroutines, config.MaxGoroutines)
 	}
 	
 	if config.CloneConcurrency <= 0 {
@@ -118,8 +130,8 @@ func validateAnalysisConfiguration(config Config) error {
 	}
 	
 	// Security: Prevent excessive clone concurrency
-	if config.CloneConcurrency > 100 {
-		return fmt.Errorf("CloneConcurrency too high (max 100 for safety), got %d", config.CloneConcurrency)
+	if config.CloneConcurrency > MaxSafeCloneConcurrency {
+		return fmt.Errorf("CloneConcurrency too high (max %d for safety), got %d", MaxSafeCloneConcurrency, config.CloneConcurrency)
 	}
 	
 	if config.GitHubToken == "" {
@@ -147,17 +159,10 @@ func createRepository(name, orgPath, organization string) Repository {
 	}
 }
 
-func loadEnvironmentFile(filePath string) error {
+func loadDotEnvFile(filePath string) error {
 	return godotenv.Load(filePath)
 }
 
-func getEnvironmentVariables() map[string]string {
-	return map[string]string{
-		"GITHUB_TOKEN":    os.Getenv("GITHUB_TOKEN"),
-		"GITHUB_ORGS":     os.Getenv("GITHUB_ORGS"),
-		"GITHUB_BASE_URL": os.Getenv("GITHUB_BASE_URL"),
-	}
-}
 
 func readDirectory(path string) ([]os.DirEntry, error) {
 	return os.ReadDir(path)
@@ -207,6 +212,22 @@ func discoverRepositories(tempDir, org string) ([]Repository, error) {
 	slog.Info("Repositories discovered", 
 		"repository_count", len(repositories), 
 		"organization", org)
+	return repositories, nil
+}
+
+func discoverRepositoriesWithProgress(tempDir, org string, tuiProgress *TUIProgressChannel) ([]Repository, error) {
+	repositories, err := discoverRepositories(tempDir, org)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update TUI with actual repository count discovered
+	if tuiProgress != nil {
+		tuiProgress.UpdateProgressWithPhase("", org, 
+			fmt.Sprintf("Found %d repositories", len(repositories)), 
+			1, 1, len(repositories), len(repositories))
+	}
+
 	return repositories, nil
 }
 
@@ -325,9 +346,9 @@ func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger
 			logRepositoryResultStructured(result, logger)
 		}
 		
-		// Update TUI progress
+		// Update TUI progress with analysis phase
 		if tuiProgress != nil {
-			tuiProgress.UpdateProgress(result.RepoName, result.Organization, len(allResults), totalRepos)
+			tuiProgress.UpdateProgressWithPhase(result.RepoName, result.Organization, "Analyzing repositories", len(allResults), totalRepos, len(allResults), totalRepos)
 		}
 		
 		if len(allResults)%50 == 0 {
@@ -415,48 +436,178 @@ func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx c
 
 
 func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingContext, reporter *Reporter, tuiProgress *TUIProgressChannel) error {
-	startTime := time.Now()
-	successfulOrgs := 0
-	failedOrgs := 0
-
-	slog.Info("Starting multi-organization analysis", 
-		"total_organizations", len(processingCtx.Config.Organizations),
-		"max_goroutines", processingCtx.Config.MaxGoroutines,
-		"clone_concurrency", processingCtx.Config.CloneConcurrency)
-
-	for i, org := range processingCtx.Config.Organizations {
-		orgLogger := slog.With("organization", org, "progress", fmt.Sprintf("%d/%d", i+1, len(processingCtx.Config.Organizations)))
-		orgLogger.Info("Processing organization")
-
-		// Attempt organization processing with recovery
-		if err := processOrganizationWithRecovery(ctx, org, processingCtx, reporter, orgLogger, tuiProgress); err != nil {
-			orgLogger.Error("Organization processing failed completely", "error", err)
-			failedOrgs++
-			continue
-		}
-		successfulOrgs++
+	multiCtx := MultiOrgContext{
+		Ctx:           ctx,
+		ProcessingCtx: processingCtx,
+		Reporter:      reporter,
+		TuiProgress:   tuiProgress,
 	}
+	
+	return processMultipleOrganizations(multiCtx)
+}
 
+func processMultipleOrganizations(multiCtx MultiOrgContext) error {
+	startTime := time.Now()
+	stats := initializeProcessingStats(multiCtx.ProcessingCtx.Config.Organizations)
+	logProcessingStart(stats, multiCtx.ProcessingCtx.Config)
+	
+	for i, org := range multiCtx.ProcessingCtx.Config.Organizations {
+		orgCtx := createOrgProcessContext(multiCtx, org, i, stats.TotalOrgs)
+		repoCount, err := processOrganizationSafely(orgCtx)
+		
+		updateProcessingStats(&stats, repoCount, err != nil)
+		updateTUIProgress(multiCtx.TuiProgress, org, stats, err != nil)
+		
+		logOrganizationCompletion(orgCtx.Logger, repoCount, stats)
+	}
+	
+	return finalizeMutliOrgProcessing(startTime, stats, multiCtx.ProcessingCtx.Config.Organizations)
+}
+
+type MultiOrgStats struct {
+	TotalOrgs            int
+	SuccessfulOrgs       int
+	FailedOrgs           int
+	TotalReposAcrossOrgs int
+	ProcessedRepos       int
+}
+
+func initializeProcessingStats(orgs []string) MultiOrgStats {
+	return MultiOrgStats{
+		TotalOrgs: len(orgs),
+	}
+}
+
+func logProcessingStart(stats MultiOrgStats, config Config) {
+	slog.Info("Starting multi-organization analysis", 
+		"total_organizations", stats.TotalOrgs,
+		"max_goroutines", config.MaxGoroutines,
+		"clone_concurrency", config.CloneConcurrency)
+}
+
+func createOrgProcessContext(multiCtx MultiOrgContext, org string, index, totalOrgs int) OrgProcessContext {
+	orgLogger := slog.With("organization", org, "progress", fmt.Sprintf("%d/%d", index+1, totalOrgs))
+	orgLogger.Info("Processing organization")
+	
+	return OrgProcessContext{
+		Ctx:           multiCtx.Ctx,
+		Org:           org,
+		ProcessingCtx: multiCtx.ProcessingCtx,
+		Reporter:      multiCtx.Reporter,
+		Logger:        orgLogger,
+		TuiProgress:   multiCtx.TuiProgress,
+	}
+}
+
+func processOrganizationSafely(orgCtx OrgProcessContext) (int, error) {
+	updateProgress := ProgressUpdate{
+		Repo: orgCtx.Org, Org: orgCtx.Org, Phase: "Starting organization",
+	}
+	if orgCtx.TuiProgress != nil {
+		orgCtx.TuiProgress.UpdateProgressWithUpdate(updateProgress)
+	}
+	
+	return processOrganizationWithRecovery(orgCtx.Ctx, orgCtx.Org, orgCtx.ProcessingCtx, orgCtx.Reporter, orgCtx.Logger, orgCtx.TuiProgress)
+}
+
+func updateProcessingStats(stats *MultiOrgStats, repoCount int, failed bool) {
+	if failed {
+		stats.FailedOrgs++
+	} else {
+		stats.TotalReposAcrossOrgs += repoCount
+		stats.ProcessedRepos += repoCount
+		stats.SuccessfulOrgs++
+	}
+}
+
+func updateTUIProgress(tuiProgress *TUIProgressChannel, org string, stats MultiOrgStats, failed bool) {
+	if tuiProgress == nil {
+		return
+	}
+	
+	if !failed {
+		tuiProgress.UpdateTotalRepos(stats.TotalReposAcrossOrgs)
+		updateProgress := ProgressUpdate{
+			Repo: org, Org: org, Phase: "Organization completed",
+			Completed: stats.ProcessedRepos, Total: stats.TotalReposAcrossOrgs,
+			RepoCount: stats.ProcessedRepos, TotalRepos: stats.TotalReposAcrossOrgs,
+		}
+		tuiProgress.UpdateProgressWithUpdate(updateProgress)
+	} else {
+		updateProgress := ProgressUpdate{
+			Repo: org, Org: org, Phase: "Organization failed",
+			Completed: stats.ProcessedRepos, Total: stats.TotalReposAcrossOrgs,
+			RepoCount: stats.ProcessedRepos, TotalRepos: stats.TotalReposAcrossOrgs,
+		}
+		tuiProgress.UpdateProgressWithUpdate(updateProgress)
+	}
+}
+
+func logOrganizationCompletion(logger *slog.Logger, repoCount int, stats MultiOrgStats) {
+	if repoCount > 0 {
+		logger.Info("Organization processing completed", 
+			"repositories_found", repoCount, 
+			"total_repos_processed", stats.ProcessedRepos,
+			"total_repos_discovered", stats.TotalReposAcrossOrgs)
+	}
+}
+
+func finalizeMutliOrgProcessing(startTime time.Time, stats MultiOrgStats, orgs []string) error {
 	duration := time.Since(startTime)
 	slog.Info("Multi-organization processing complete", 
 		"duration", duration,
-		"successful_orgs", successfulOrgs,
-		"failed_orgs", failedOrgs,
-		"total_orgs", len(processingCtx.Config.Organizations))
+		"successful_orgs", stats.SuccessfulOrgs,
+		"failed_orgs", stats.FailedOrgs,
+		"total_orgs", len(orgs))
 
-	if failedOrgs > 0 {
-		return fmt.Errorf("processing completed with %d/%d organizations failed", failedOrgs, len(processingCtx.Config.Organizations))
+	if stats.FailedOrgs > 0 {
+		return fmt.Errorf("processing completed with %d/%d organizations failed", stats.FailedOrgs, len(orgs))
 	}
 
 	return nil
 }
 
-func processOrganizationWithRecovery(ctx context.Context, org string, processingCtx ProcessingContext, reporter *Reporter, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
+func processOrganizationWithRecovery(ctx context.Context, org string, processingCtx ProcessingContext, reporter *Reporter, logger *slog.Logger, tuiProgress *TUIProgressChannel) (int, error) {
+	orgCtx := OrgProcessContext{
+		Ctx:           ctx,
+		Org:           org,
+		ProcessingCtx: processingCtx,
+		Reporter:      reporter,
+		Logger:        logger,
+		TuiProgress:   tuiProgress,
+	}
+	
+	return processOrganizationWorkflow(orgCtx)
+}
+
+func processOrganizationWorkflow(orgCtx OrgProcessContext) (int, error) {
+	tempDir, cleanup, err := setupWorkspaceWithRetry(orgCtx.Logger)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanupWorkspace(cleanup, tempDir, orgCtx.Org, orgCtx.Logger)
+	
+	operation := createCloneOperation(orgCtx.Org, tempDir, orgCtx.ProcessingCtx.Config)
+	if err := executeCloneWithRetry(orgCtx.Ctx, operation, orgCtx.Logger, orgCtx.TuiProgress); err != nil {
+		return 0, err
+	}
+	
+	repositories, err := discoverRepositoriesWithTracking(tempDir, orgCtx.Org, orgCtx.TuiProgress)
+	if err != nil {
+		return 0, err
+	}
+	
+	results := analyzeRepositoriesConcurrently(orgCtx, repositories)
+	orgCtx.Reporter.AddResults(results)
+	
+	return len(repositories), nil
+}
+
+func setupWorkspaceWithRetry(logger *slog.Logger) (string, func(), error) {
 	var tempDir string
 	var cleanup func()
 	var setupErr error
 
-	// Workspace setup with retry
 	for attempt := 1; attempt <= 3; attempt++ {
 		tempDir, cleanup, setupErr = setupWorkspaceWithRecovery(logger)
 		if setupErr == nil {
@@ -465,50 +616,122 @@ func processOrganizationWithRecovery(ctx context.Context, org string, processing
 		logger.Warn("Workspace setup failed, retrying", "attempt", attempt, "error", setupErr)
 		time.Sleep(time.Duration(attempt) * time.Second)
 	}
+	
 	if setupErr != nil {
-		return fmt.Errorf("failed to setup workspace after 3 attempts: %w", setupErr)
+		return "", nil, fmt.Errorf("failed to setup workspace after 3 attempts: %w", setupErr)
 	}
-	defer func() {
-		logger.Info("Starting cleanup of repositories", "temp_dir", tempDir, "organization", org)
-		cleanup()
-		logger.Info("Cleanup completed", "temp_dir", tempDir, "organization", org)
-	}()
+	
+	return tempDir, cleanup, nil
+}
 
-	// Clone with retry
-	operation := createCloneOperation(org, tempDir, processingCtx.Config)
+func cleanupWorkspace(cleanup func(), tempDir, org string, logger *slog.Logger) {
+	logger.Info("Starting cleanup of repositories", "temp_dir", tempDir, "organization", org)
+	cleanup()
+	logger.Info("Cleanup completed", "temp_dir", tempDir, "organization", org)
+}
+
+func executeCloneWithRetry(ctx context.Context, operation CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
 	var cloneErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		cloneErr = executeClonePhaseWithRecovery(ctx, operation, logger)
+		cloneErr = executeClonePhaseWithProgress(ctx, operation, logger, tuiProgress)
 		if cloneErr == nil {
 			break
 		}
 		logger.Warn("Clone failed, retrying", "attempt", attempt, "error", cloneErr)
 		time.Sleep(time.Duration(attempt*2) * time.Second)
 	}
+	
 	if cloneErr != nil {
 		return fmt.Errorf("failed to clone after 3 attempts: %w", cloneErr)
 	}
+	
+	return nil
+}
 
-	// Repository discovery
-	repositories, discoveryErr := discoverRepositories(tempDir, org)
+func discoverRepositoriesWithTracking(tempDir, org string, tuiProgress *TUIProgressChannel) ([]Repository, error) {
+	updateProgress := ProgressUpdate{
+		Repo: org, Org: org, Phase: "Discovering repositories",
+		Completed: 1, Total: 1,
+	}
+	if tuiProgress != nil {
+		tuiProgress.UpdateProgressWithUpdate(updateProgress)
+	}
+	
+	repositories, discoveryErr := discoverRepositoriesWithProgress(tempDir, org, tuiProgress)
 	if discoveryErr != nil {
-		return fmt.Errorf("failed to discover repositories: %w", discoveryErr)
+		return nil, fmt.Errorf("failed to discover repositories: %w", discoveryErr)
+	}
+	
+	return repositories, nil
+}
+
+func analyzeRepositoriesConcurrently(orgCtx OrgProcessContext, repositories []Repository) []AnalysisResult {
+	updateProgress := ProgressUpdate{
+		Repo: "", Org: orgCtx.Org, Phase: "Starting analysis",
+		Completed: 0, Total: len(repositories),
+		RepoCount: 0, TotalRepos: len(repositories),
+	}
+	if orgCtx.TuiProgress != nil {
+		orgCtx.TuiProgress.UpdateProgressWithUpdate(updateProgress)
 	}
 
-	// Process repositories with error recovery and context timeout
-	analysisCtx, analysisCancel := context.WithTimeout(ctx, processingCtx.Config.ProcessTimeout)
+	analysisCtx, analysisCancel := context.WithTimeout(orgCtx.Ctx, orgCtx.ProcessingCtx.Config.ProcessTimeout)
 	defer analysisCancel()
 	
-	results := processRepositoriesConcurrentlyWithTimeout(repositories, analysisCtx, processingCtx, logger, tuiProgress)
-	reporter.AddResults(results)
+	repoLogger := slog.With("organization", orgCtx.Org)
+	return processRepositoriesConcurrentlyWithTimeout(repositories, analysisCtx, orgCtx.ProcessingCtx, repoLogger, orgCtx.TuiProgress)
+}
 
-	logger.Info("Organization processing completed", "repositories_found", len(repositories))
-	return nil
+
+
+func logConfiguration(config Config) {
+	slog.Info("Configuration loaded",
+		"organizations", config.Organizations,
+		"max_goroutines", config.MaxGoroutines,
+		"clone_concurrency", config.CloneConcurrency,
+		"github_token", maskToken(config.GitHubToken),
+		"base_url", config.BaseURL)
+}
+
+func maskToken(token string) string {
+	if len(token) < 8 {
+		return "***"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
+}
+
+// Test-only functions to maintain backward compatibility with existing tests
+func createConfigFromEnv(envVars map[string]string) Config {
+	getEnvOrDefault := func(key, defaultValue string) string {
+		if value, exists := envVars[key]; exists && value != "" {
+			return value
+		}
+		return defaultValue
+	}
+
+	return Config{
+		MaxGoroutines:    DefaultMaxGoroutines,
+		CloneConcurrency: DefaultCloneConcurrency,
+		ProcessTimeout:   DefaultProcessTimeout,
+		SkipArchived:     true,
+		SkipForks:        false,
+		GitHubToken:      getEnvOrDefault("GITHUB_TOKEN", ""),
+		Organizations:    parseOrganizations(getEnvOrDefault("GITHUB_ORGS", "")),
+		BaseURL:          getEnvOrDefault("GITHUB_BASE_URL", ""),
+	}
+}
+
+func getEnvironmentVariables() map[string]string {
+	return map[string]string{
+		"GITHUB_TOKEN":    os.Getenv("GITHUB_TOKEN"),
+		"GITHUB_ORGS":     os.Getenv("GITHUB_ORGS"),
+		"GITHUB_BASE_URL": os.Getenv("GITHUB_BASE_URL"),
+	}
 }
 
 func loadEnvironmentConfig(envFile string) (Config, error) {
 	if envFile != "" {
-		loadErr := loadEnvironmentFile(envFile)
+		loadErr := loadDotEnvFile(envFile)
 		if loadErr != nil {
 			return Config{}, fmt.Errorf("failed to load %s: %w", envFile, loadErr)
 		}
@@ -526,22 +749,6 @@ func createTimeoutContext(timeout time.Duration) (context.Context, context.Cance
 
 func handleApplicationError(err error) {
 	slog.Error("Application error", "error", err)
-}
-
-func logConfiguration(config Config) {
-	slog.Info("Configuration loaded",
-		"organizations", config.Organizations,
-		"max_goroutines", config.MaxGoroutines,
-		"clone_concurrency", config.CloneConcurrency,
-		"github_token", maskToken(config.GitHubToken),
-		"base_url", config.BaseURL)
-}
-
-func maskToken(token string) string {
-	if len(token) < 8 {
-		return "***"
-	}
-	return token[:4] + "..." + token[len(token)-4:]
 }
 
 func main() {

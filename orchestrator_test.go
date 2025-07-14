@@ -171,7 +171,7 @@ func TestValidateAnalysisConfiguration(t *testing.T) {
 				Organizations:    []string{"test-org"},
 			},
 			expectError: true,
-			errorMsg:    "GITHUB_TOKEN is required",
+			errorMsg:    "GitHubToken is required",
 		},
 		{
 			name: "missing organizations",
@@ -182,7 +182,7 @@ func TestValidateAnalysisConfiguration(t *testing.T) {
 				Organizations:    []string{},
 			},
 			expectError: true,
-			errorMsg:    "at least one organization must be specified in GITHUB_ORGS",
+			errorMsg:    "at least one organization must be specified",
 		},
 	}
 
@@ -934,10 +934,10 @@ func TestLoadEnvironmentFile(t *testing.T) {
 			t.Fatalf("Failed to close temp file: %v", err)
 		}
 
-		// When: loadEnvironmentFile is called
+		// When: loadDotEnvFile is called
 		// Then: should not panic
-		if err := loadEnvironmentFile(tempFile.Name()); err != nil {
-			t.Logf("loadEnvironmentFile returned error (may be expected): %v", err)
+		if err := loadDotEnvFile(tempFile.Name()); err != nil {
+			t.Logf("loadDotEnvFile returned error (may be expected): %v", err)
 		}
 	})
 }

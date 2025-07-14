@@ -126,8 +126,8 @@ You can specify configuration via:
 Environment variables:
 • GITHUB_TOKEN: GitHub API token (required)
 • GITHUB_ORGS: Comma-separated list of organizations
-• MAX_GOROUTINES: Maximum concurrent goroutines (default: 100)
-• CLONE_CONCURRENCY: Clone concurrency limit (default: 100)
+• MAX_GOROUTINES: Maximum concurrent goroutines (default: ` + fmt.Sprintf("%d", DefaultMaxGoroutines) + `)
+• CLONE_CONCURRENCY: Clone concurrency limit (default: ` + fmt.Sprintf("%d", DefaultCloneConcurrency) + `)
 	`,
 	RunE: runAnalyze,
 }
@@ -174,68 +174,76 @@ var configValidateCmd = &cobra.Command{
 
 func init() {
 	cobra.OnInitialize(initializeConfig)
+	initializeGlobalFlags()
+	initializeAnalyzeFlags()
+	bindViperFlags()
+	setupCommands()
+}
 
-	// Global flags
+// initializeGlobalFlags sets up persistent flags for all commands
+func initializeGlobalFlags() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.tf-analyzer.yaml)")
 	rootCmd.PersistentFlags().StringVar(&envFile, "env-file", ".env", "environment file path (default is .env in current directory)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+}
 
-	// Analyze command flags
+// initializeAnalyzeFlags sets up flags specific to the analyze command
+func initializeAnalyzeFlags() {
 	analyzeCmd.Flags().StringSliceVarP(&organizations, "orgs", "o", []string{}, "GitHub organizations to analyze (space or comma-separated)")
 	analyzeCmd.Flags().StringVarP(&githubToken, "token", "t", "", "GitHub API token")
-	analyzeCmd.Flags().IntVar(&maxGoroutines, "max-goroutines", 100, "maximum concurrent goroutines")
-	analyzeCmd.Flags().IntVar(&cloneConcurrency, "clone-concurrency", 100, "clone concurrency limit")
-	analyzeCmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "processing timeout")
+	analyzeCmd.Flags().IntVar(&maxGoroutines, "max-goroutines", DefaultMaxGoroutines, "maximum concurrent goroutines")
+	analyzeCmd.Flags().IntVar(&cloneConcurrency, "clone-concurrency", DefaultCloneConcurrency, "clone concurrency limit")
+	analyzeCmd.Flags().DurationVar(&timeout, "timeout", DefaultProcessTimeout, "processing timeout")
 	analyzeCmd.Flags().StringVar(&outputFormat, "format", "all", "output format: json, csv, markdown, or all")
 	analyzeCmd.Flags().StringVar(&outputDir, "output-dir", ".", "output directory for reports")
 	analyzeCmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable interactive TUI")
 	analyzeCmd.Flags().StringVar(&markdownStyle, "markdown-style", "auto", "markdown rendering style: auto, dark, light, notty")
 	analyzeCmd.Flags().BoolVar(&rawMarkdown, "raw-markdown", false, "print raw markdown without glamour rendering")
-
+	
 	// Mark required flags
 	if err := analyzeCmd.MarkFlagRequired("orgs"); err != nil {
 		panic(fmt.Sprintf("Failed to mark orgs flag as required: %v", err))
 	}
+}
 
-	// Bind flags to viper
-	if err := viper.BindPFlag("organizations", analyzeCmd.Flags().Lookup("orgs")); err != nil {
-		panic(fmt.Sprintf("Failed to bind organizations flag: %v", err))
+// bindViperFlags binds command flags to viper configuration
+func bindViperFlags() {
+	flagBindings := map[string]string{
+		"orgs":             "organizations",
+		"token":            "github.token",
+		"max-goroutines":   "processing.max_goroutines",
+		"clone-concurrency": "processing.clone_concurrency",
+		"timeout":          "processing.timeout",
+		"format":           "output.format",
+		"output-dir":       "output.directory",
+		"no-tui":          "ui.no_tui",
+		"markdown-style":   "ui.markdown_style",
+		"raw-markdown":     "ui.raw_markdown",
 	}
-	if err := viper.BindPFlag("github.token", analyzeCmd.Flags().Lookup("token")); err != nil {
-		panic(fmt.Sprintf("Failed to bind github.token flag: %v", err))
+	
+	for flag, viperKey := range flagBindings {
+		if err := viper.BindPFlag(viperKey, analyzeCmd.Flags().Lookup(flag)); err != nil {
+			panic(fmt.Sprintf("Failed to bind %s flag: %v", flag, err))
+		}
 	}
-	if err := viper.BindPFlag("processing.max_goroutines", analyzeCmd.Flags().Lookup("max-goroutines")); err != nil {
-		panic(fmt.Sprintf("Failed to bind max_goroutines flag: %v", err))
-	}
-	if err := viper.BindPFlag("processing.clone_concurrency", analyzeCmd.Flags().Lookup("clone-concurrency")); err != nil {
-		panic(fmt.Sprintf("Failed to bind clone_concurrency flag: %v", err))
-	}
-	if err := viper.BindPFlag("processing.timeout", analyzeCmd.Flags().Lookup("timeout")); err != nil {
-		panic(fmt.Sprintf("Failed to bind timeout flag: %v", err))
-	}
-	if err := viper.BindPFlag("output.format", analyzeCmd.Flags().Lookup("format")); err != nil {
-		panic(fmt.Sprintf("Failed to bind format flag: %v", err))
-	}
-	if err := viper.BindPFlag("output.directory", analyzeCmd.Flags().Lookup("output-dir")); err != nil {
-		panic(fmt.Sprintf("Failed to bind output directory flag: %v", err))
-	}
-	if err := viper.BindPFlag("ui.no_tui", analyzeCmd.Flags().Lookup("no-tui")); err != nil {
-		panic(fmt.Sprintf("Failed to bind no_tui flag: %v", err))
-	}
-	if err := viper.BindPFlag("ui.markdown_style", analyzeCmd.Flags().Lookup("markdown-style")); err != nil {
-		panic(fmt.Sprintf("Failed to bind markdown_style flag: %v", err))
-	}
-	if err := viper.BindPFlag("ui.raw_markdown", analyzeCmd.Flags().Lookup("raw-markdown")); err != nil {
-		panic(fmt.Sprintf("Failed to bind raw_markdown flag: %v", err))
-	}
+}
 
-	// Add subcommands
+// setupCommands adds all subcommands to the root command
+func setupCommands() {
 	configCmd.AddCommand(configShowCmd, configInitCmd, configValidateCmd)
 	rootCmd.AddCommand(analyzeCmd, configCmd)
 }
 
+// initializeConfig loads configuration from files and environment
 func initializeConfig() {
-	// Load .env file - required by default
+	loadEnvironmentFile()
+	setupViperConfig()
+	bindEnvironmentVariables()
+	loadConfigFile()
+}
+
+// loadEnvironmentFile loads the .env file
+func loadEnvironmentFile() {
 	envFilePath := envFile
 	if envFilePath == "" {
 		envFilePath = ".env"
@@ -247,7 +255,10 @@ func initializeConfig() {
 		fmt.Fprintf(os.Stderr, "Use --env-file flag to specify a different location.\n")
 		os.Exit(1)
 	}
+}
 
+// setupViperConfig configures viper settings
+func setupViperConfig() {
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
 	} else {
@@ -260,25 +271,29 @@ func initializeConfig() {
 		viper.SetConfigName(".tf-analyzer")
 	}
 
-	// Environment variable bindings
 	viper.SetEnvPrefix("TF_ANALYZER")
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+}
 
-	// Specific environment variable mappings
-	if err := viper.BindEnv("github.token", "GITHUB_TOKEN"); err != nil {
-		panic(fmt.Sprintf("Failed to bind GITHUB_TOKEN env var: %v", err))
+// bindEnvironmentVariables binds specific environment variables
+func bindEnvironmentVariables() {
+	envBindings := map[string]string{
+		"github.token":               "GITHUB_TOKEN",
+		"organizations":              "GITHUB_ORGS",
+		"processing.max_goroutines":   "MAX_GOROUTINES",
+		"processing.clone_concurrency": "CLONE_CONCURRENCY",
 	}
-	if err := viper.BindEnv("organizations", "GITHUB_ORGS"); err != nil {
-		panic(fmt.Sprintf("Failed to bind GITHUB_ORGS env var: %v", err))
+	
+	for viperKey, envVar := range envBindings {
+		if err := viper.BindEnv(viperKey, envVar); err != nil {
+			panic(fmt.Sprintf("Failed to bind %s env var: %v", envVar, err))
+		}
 	}
-	if err := viper.BindEnv("processing.max_goroutines", "MAX_GOROUTINES"); err != nil {
-		panic(fmt.Sprintf("Failed to bind MAX_GOROUTINES env var: %v", err))
-	}
-	if err := viper.BindEnv("processing.clone_concurrency", "CLONE_CONCURRENCY"); err != nil {
-		panic(fmt.Sprintf("Failed to bind CLONE_CONCURRENCY env var: %v", err))
-	}
+}
 
+// loadConfigFile reads the configuration file if it exists
+func loadConfigFile() {
 	if err := viper.ReadInConfig(); err == nil && verbose {
 		fmt.Printf("Using config file: %s\n", viper.ConfigFileUsed())
 	}
@@ -365,6 +380,11 @@ func setupTUIIfEnabled(config Config, logger *slog.Logger) *TUIProgressChannel {
 	tuiProgress.Start(ctx)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("TUI panic recovered", "panic", r)
+			}
+		}()
 		if err := tuiProgress.Run(); err != nil {
 			logger.Error("TUI error", "error", err)
 		}
@@ -382,7 +402,8 @@ func executeAnalysisWorkflow(ctx context.Context, processingCtx ProcessingContex
 func completeTUIAndWait(tuiProgress *TUIProgressChannel, reporter *Reporter) {
 	if tuiProgress != nil {
 		tuiProgress.Complete(reporter.results)
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second) // Give time to view results
+		tuiProgress.Cleanup() // Ensure proper terminal cleanup
 	}
 }
 
@@ -448,6 +469,7 @@ func validateCLIAnalysisConfig(config Config) error {
 
 func estimateRepositoryCount(config Config) int {
 	// Conservative estimate: 50 repos per organization
+	// This will be updated with actual counts during cloning
 	return len(config.Organizations) * 50
 }
 
@@ -549,8 +571,9 @@ func showConfig(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func initConfig(cmd *cobra.Command, args []string) error {
-	configTemplate := `# TF-Analyzer Configuration File
+// createConfigTemplate generates the configuration file template
+func createConfigTemplate() string {
+	return `# TF-Analyzer Configuration File
 
 # GitHub Configuration
 github:
@@ -566,8 +589,8 @@ organizations:
 
 # Processing Configuration  
 processing:
-  max_goroutines: 100       # Maximum concurrent goroutines
-  clone_concurrency: 100    # Clone concurrency limit
+  max_goroutines: ` + fmt.Sprintf("%d", DefaultMaxGoroutines) + `       # Maximum concurrent goroutines
+  clone_concurrency: ` + fmt.Sprintf("%d", DefaultCloneConcurrency) + `    # Clone concurrency limit
   timeout: "30m"           # Processing timeout
 
 # Output Configuration
@@ -581,7 +604,9 @@ ui:
   markdown_style: "auto"  # Markdown rendering style: auto, dark, light, notty
   raw_markdown: false     # Print raw markdown without glamour rendering
 `
+}
 
+func initConfig(cmd *cobra.Command, args []string) error {
 	configPath := ".tf-analyzer.yaml"
 	if cfgFile != "" {
 		configPath = cfgFile
@@ -591,6 +616,7 @@ ui:
 		return fmt.Errorf("configuration file already exists: %s", configPath)
 	}
 
+	configTemplate := createConfigTemplate()
 	if err := os.WriteFile(configPath, []byte(configTemplate), 0644); err != nil {
 		return fmt.Errorf("failed to create configuration file: %w", err)
 	}

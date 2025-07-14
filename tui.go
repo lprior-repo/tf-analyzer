@@ -53,6 +53,10 @@ type ProgressMsg struct {
 	TotalRepos   int
 }
 
+type UpdateTotalReposMsg struct {
+	TotalRepos int
+}
+
 type CompletedMsg struct {
 	Results []AnalysisResult
 }
@@ -109,9 +113,7 @@ func NewTUIModel(total int) TUIModel {
 func (m TUIModel) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
-		func() tea.Msg {
-			return WindowSizeMsg{Width: 80, Height: 24}
-		},
+		m.progress.progress.Init(),
 	)
 }
 
@@ -125,8 +127,10 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCustomWindowResize(msg), nil
 	case ProgressMsg:
 		return m.handleProgressUpdate(msg)
+	case UpdateTotalReposMsg:
+		return m.handleTotalReposUpdate(msg), nil
 	case CompletedMsg:
-		return m.handleAnalysisCompletion(msg), nil
+		return m.handleAnalysisCompletion(msg)
 	case progress.FrameMsg:
 		return m.handleProgressFrame(msg)
 	}
@@ -137,14 +141,14 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m TUIModel) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
-		return m, tea.Quit
+		return m, tea.Batch(tea.ExitAltScreen, tea.Quit)
 	case "tab":
 		if m.mode == "results" {
 			m.results.showDetails = !m.results.showDetails
 		}
 	case "r":
 		if m.mode == "results" {
-			return m, tea.ExitAltScreen
+			return m, tea.Batch(tea.ExitAltScreen, tea.Quit)
 		}
 	}
 	return m, nil
@@ -177,10 +181,21 @@ func (m TUIModel) handleProgressUpdate(msg ProgressMsg) (tea.Model, tea.Cmd) {
 	m.progress.completed = msg.Completed
 	m.progress.total = msg.Total
 	
-	return m, m.progress.progress.SetPercent(float64(msg.Completed) / float64(msg.Total))
+	var percent float64
+	if msg.Total > 0 {
+		percent = float64(msg.Completed) / float64(msg.Total)
+	}
+	
+	return m, m.progress.progress.SetPercent(percent)
 }
 
-func (m TUIModel) handleAnalysisCompletion(msg CompletedMsg) TUIModel {
+func (m TUIModel) handleTotalReposUpdate(msg UpdateTotalReposMsg) TUIModel {
+	m.progress.totalRepos = msg.TotalRepos
+	m.progress.total = msg.TotalRepos
+	return m
+}
+
+func (m TUIModel) handleAnalysisCompletion(msg CompletedMsg) (tea.Model, tea.Cmd) {
 	m.mode = "results"
 	m.progress.done = true
 	m.progress.results = msg.Results
@@ -189,15 +204,18 @@ func (m TUIModel) handleAnalysisCompletion(msg CompletedMsg) TUIModel {
 	m.results.table.SetHeight(m.height - 10)
 	m.results.table.SetWidth(m.width - 4)
 	
-	return m
+	return m, nil
 }
 
 func (m TUIModel) handleProgressFrame(msg progress.FrameMsg) (tea.Model, tea.Cmd) {
-	progressModel, cmd := m.progress.progress.Update(msg)
-	if pm, ok := progressModel.(progress.Model); ok {
-		m.progress.progress = pm
+	if m.mode == "progress" {
+		progressModel, cmd := m.progress.progress.Update(msg)
+		if pm, ok := progressModel.(progress.Model); ok {
+			m.progress.progress = pm
+		}
+		return m, cmd
 	}
-	return m, cmd
+	return m, nil
 }
 
 func (m TUIModel) handleResultsModeUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -239,8 +257,9 @@ func (m TUIModel) renderProgressView() string {
 	
 	// Repository count info
 	if m.progress.totalRepos > 0 {
-		b.WriteString(fmt.Sprintf("📊 Repository Progress: %d/%d\n", 
-			m.progress.repoCount, m.progress.totalRepos))
+		repoPercentage := float64(m.progress.repoCount) / float64(m.progress.totalRepos) * 100
+		b.WriteString(fmt.Sprintf("📊 Repository Progress: %d/%d (%.1f%%)\n", 
+			m.progress.repoCount, m.progress.totalRepos, repoPercentage))
 	}
 	b.WriteString("\n")
 
@@ -260,7 +279,7 @@ func (m TUIModel) renderProgressView() string {
 		b.WriteString("\n")
 		b.WriteString(successStyle.Render("✅ Analysis complete!"))
 		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("Press any key to view results..."))
+		b.WriteString(helpStyle.Render("Press 'q' to quit • 'r' to view results"))
 	} else {
 		b.WriteString("\n\n")
 		b.WriteString(helpStyle.Render("Press 'q' to quit • Live progress updates"))
@@ -455,7 +474,7 @@ type TUIProgressChannel struct {
 
 func NewTUIProgressChannel(total int) *TUIProgressChannel {
 	model := NewTUIModel(total)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model)
 	
 	return &TUIProgressChannel{
 		progressChan: make(chan ProgressMsg, 100),
@@ -466,6 +485,11 @@ func NewTUIProgressChannel(total int) *TUIProgressChannel {
 
 func (t *TUIProgressChannel) Start(ctx context.Context) {
 	go func() {
+		defer func() {
+			close(t.progressChan)
+			close(t.completeChan)
+		}()
+		
 		for {
 			select {
 			case progress := <-t.progressChan:
@@ -474,6 +498,7 @@ func (t *TUIProgressChannel) Start(ctx context.Context) {
 				t.program.Send(complete)
 				return
 			case <-ctx.Done():
+				t.program.Send(tea.Batch(tea.ExitAltScreen, tea.Quit))
 				return
 			}
 		}
@@ -484,27 +509,45 @@ func (t *TUIProgressChannel) UpdateProgress(repo, org string, completed, total i
 	t.UpdateProgressWithPhase(repo, org, "", completed, total, 0, 0)
 }
 
-func (t *TUIProgressChannel) UpdateProgressWithPhase(repo, org, phase string, completed, total, repoCount, totalRepos int) {
+// UpdateProgressWithUpdate uses the ProgressUpdate struct to reduce parameters
+func (t *TUIProgressChannel) UpdateProgressWithUpdate(update ProgressUpdate) {
 	select {
 	case t.progressChan <- ProgressMsg{
-		Repo:         repo,
-		Organization: org,
-		Phase:        phase,
-		Completed:    completed,
-		Total:        total,
-		RepoCount:    repoCount,
-		TotalRepos:   totalRepos,
+		Repo:         update.Repo,
+		Organization: update.Org,
+		Phase:        update.Phase,
+		Completed:    update.Completed,
+		Total:        update.Total,
+		RepoCount:    update.RepoCount,
+		TotalRepos:   update.TotalRepos,
 	}:
 	default:
-		// Channel full, skip update
 	}
 }
 
+func (t *TUIProgressChannel) UpdateProgressWithPhase(repo, org, phase string, completed, total, repoCount, totalRepos int) {
+	t.UpdateProgressWithUpdate(ProgressUpdate{
+		Repo: repo, Org: org, Phase: phase,
+		Completed: completed, Total: total, RepoCount: repoCount, TotalRepos: totalRepos,
+	})
+}
+
+func (t *TUIProgressChannel) UpdateTotalRepos(totalRepos int) {
+	t.program.Send(UpdateTotalReposMsg{TotalRepos: totalRepos})
+}
+
 func (t *TUIProgressChannel) Complete(results []AnalysisResult) {
-	t.completeChan <- CompletedMsg{Results: results}
+	select {
+	case t.completeChan <- CompletedMsg{Results: results}:
+	default:
+	}
 }
 
 func (t *TUIProgressChannel) Run() error {
 	_, err := t.program.Run()
 	return err
+}
+
+func (t *TUIProgressChannel) Cleanup() {
+	t.program.Send(tea.Batch(tea.ExitAltScreen, tea.Quit))
 }

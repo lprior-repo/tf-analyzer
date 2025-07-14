@@ -111,6 +111,13 @@ type FileProcessingStats struct {
 	FilesErrored   int
 }
 
+// FileProcessingContext reduces function parameters
+type FileProcessingContext struct {
+	Data   *RawAnalysisData
+	Stats  *FileProcessingStats
+	Logger *slog.Logger
+}
+
 var mandatoryTags = []string{"Environment", "Owner", "Project", "CostCenter"}
 
 func isRelevantFile(path string) bool {
@@ -539,43 +546,49 @@ func processRepositoryFiles(repoPath string, logger *slog.Logger) (RawAnalysisDa
 			return err
 		}
 		
-		return processFileEntry(path, d, &data, &stats, logger)
+		ctx := FileProcessingContext{
+			Data:   &data,
+			Stats:  &stats,
+			Logger: logger,
+		}
+		return processFileEntry(path, d, ctx)
 	})
 
 	logFileProcessingStats(stats, logger)
 	return data, err
 }
 
-func processFileEntry(path string, d fs.DirEntry, data *RawAnalysisData, stats *FileProcessingStats, logger *slog.Logger) error {
+func processFileEntry(path string, d fs.DirEntry, ctx FileProcessingContext) error {
 	if d.IsDir() || shouldSkipPath(path) {
 		return nil
 	}
 	
 	if !isRelevantFile(path) {
-		stats.FilesSkipped++
+		ctx.Stats.FilesSkipped++
 		return nil
 	}
 
 	content, readErr := loadFileContent(path)
 	if readErr != nil {
-		logger.Debug("Failed to read file, skipping", "path", path, "error", readErr)
-		stats.FilesErrored++
+		ctx.Logger.Debug("Failed to read file, skipping", "path", path, "error", readErr)
+		ctx.Stats.FilesErrored++
 		return nil
 	}
 
-	parseFileContent(string(content), path, data, logger)
-	stats.FilesProcessed++
+	parseFileContentWithContext(string(content), path, ctx)
+	ctx.Stats.FilesProcessed++
 	return nil
 }
 
-func parseFileContent(content, path string, data *RawAnalysisData, logger *slog.Logger) {
-	parseBackendData(content, path, data, logger)
-	parseProviderData(content, path, data, logger)
-	parseModuleData(content, path, data, logger)
-	parseResourceData(content, path, data, logger)
-	parseVariableData(content, path, data, logger)
-	parseOutputData(content, path, data, logger)
+func parseFileContentWithContext(content, path string, ctx FileProcessingContext) {
+	parseBackendData(content, path, ctx.Data, ctx.Logger)
+	parseProviderData(content, path, ctx.Data, ctx.Logger)
+	parseModuleData(content, path, ctx.Data, ctx.Logger)
+	parseResourceData(content, path, ctx.Data, ctx.Logger)
+	parseVariableData(content, path, ctx.Data, ctx.Logger)
+	parseOutputData(content, path, ctx.Data, ctx.Logger)
 }
+
 
 func parseBackendData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
 	if data.Backend == nil {
@@ -687,31 +700,26 @@ func logFileProcessingStats(stats FileProcessingStats, logger *slog.Logger) {
 }
 
 // Safe parsing functions with error recovery
-func parseBackendSafely(content string, filename string, logger *slog.Logger) *BackendConfig {
+// Generic safe parser function to eliminate code duplication
+func parseWithRecovery[T any](content, filename, parseType string, logger *slog.Logger, parser func(string, string) T) T {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug("Backend parsing panic recovered", "panic", r, "file", filename)
+			logger.Debug(parseType+" parsing panic recovered", "panic", r, "file", filename)
 		}
 	}()
-	return parseBackend(content, filename)
+	return parser(content, filename)
+}
+
+func parseBackendSafely(content string, filename string, logger *slog.Logger) *BackendConfig {
+	return parseWithRecovery(content, filename, "Backend", logger, parseBackend)
 }
 
 func parseProvidersSafely(content string, filename string, logger *slog.Logger) []ProviderDetail {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Debug("Provider parsing panic recovered", "panic", r, "file", filename)
-		}
-	}()
-	return parseProviders(content, filename)
+	return parseWithRecovery(content, filename, "Provider", logger, parseProviders)
 }
 
 func parseModulesSafely(content string, filename string, logger *slog.Logger) []ModuleDetail {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Debug("Module parsing panic recovered", "panic", r, "file", filename)
-		}
-	}()
-	return parseModules(content, filename)
+	return parseWithRecovery(content, filename, "Module", logger, parseModules)
 }
 
 func parseResourcesSafely(content string, filename string, logger *slog.Logger) ([]ResourceType, []UntaggedResource) {
@@ -724,21 +732,11 @@ func parseResourcesSafely(content string, filename string, logger *slog.Logger) 
 }
 
 func parseVariablesSafely(content string, filename string, logger *slog.Logger) []VariableDefinition {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Debug("Variable parsing panic recovered", "panic", r, "file", filename)
-		}
-	}()
-	return parseVariables(content, filename)
+	return parseWithRecovery(content, filename, "Variable", logger, parseVariables)
 }
 
 func parseOutputsSafely(content string, filename string, logger *slog.Logger) []string {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Debug("Output parsing panic recovered", "panic", r, "file", filename)
-		}
-	}()
-	return parseOutputs(content, filename)
+	return parseWithRecovery(content, filename, "Output", logger, parseOutputs)
 }
 
 

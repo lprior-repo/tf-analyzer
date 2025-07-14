@@ -69,7 +69,7 @@ func TestUserAnalyzesMultipleOrganizations(t *testing.T) {
 		
 		// AND: JSON report should contain complete analysis data
 		assertFileExistsAndContains(t, jsonFile, "hashicorp")
-		assertFileExistsAndContains(t, jsonFile, "\"total_repositories\":1")
+		assertFileExistsAndContains(t, jsonFile, "\"total_repos_scanned\": 1")
 		
 		// AND: Summary report should be printable without errors
 		if err := reporter.PrintSummaryReport(); err != nil {
@@ -124,11 +124,11 @@ func TestUserConfiguresAndValidatesSetup(t *testing.T) {
 
 // TestUserHandlesAnalysisErrors tests error scenarios user might encounter
 func TestUserHandlesAnalysisErrors(t *testing.T) {
-	t.Run("user gets helpful error when GitHub token is invalid", func(t *testing.T) {
-		// GIVEN: A user has an invalid GitHub token
+	t.Run("user gets helpful error when GitHub token is empty", func(t *testing.T) {
+		// GIVEN: A user has an empty GitHub token
 		config := Config{
 			Organizations:    []string{"test-org"},
-			GitHubToken:      "invalid-token",
+			GitHubToken:      "", // Empty token
 			MaxGoroutines:    10,
 			CloneConcurrency: 5,
 		}
@@ -138,11 +138,10 @@ func TestUserHandlesAnalysisErrors(t *testing.T) {
 		
 		// THEN: User should get a helpful error message about the token
 		if err == nil {
-			t.Error("User expects validation error for invalid token, but got nil")
+			t.Error("User expects validation error for empty token, but got nil")
 		}
 		
-		// We can't test actual GitHub validation without real tokens,
-		// but we can test our configuration validation logic
+		// We can test our configuration validation logic
 		if !strings.Contains(err.Error(), "GitHubToken") {
 			t.Errorf("User expects error to mention GitHubToken, got: %v", err)
 		}

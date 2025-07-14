@@ -24,10 +24,10 @@ tasks:
 
   # Development targets
   run:
-    desc: Run the application
+    desc: Run the application with TUI
     cmds:
-      - echo "Running tf-analyzer..."
-      - go run . --env-file .env
+      - echo "Running tf-analyzer with TUI..."
+      - go run . analyze --env-file .env --orgs gruntwork-io
 
   dev:
     desc: Run with live reload (requires air)

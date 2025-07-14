@@ -40,48 +40,56 @@ func (r *Reporter) PrintMarkdownToScreenWithGlamour() error {
 func (r *Reporter) PrintMarkdownToScreenWithStyle(style string) error {
 	markdownContent := r.generateMarkdownContent()
 	
-	// Create glamour renderer with specific style
-	var renderer *glamour.TermRenderer
-	var err error
-	
-	switch style {
-	case "dark":
-		renderer, err = glamour.NewTermRenderer(
-			glamour.WithStylePath("dark"),
-			glamour.WithWordWrap(120),
-		)
-	case "light":
-		renderer, err = glamour.NewTermRenderer(
-			glamour.WithStylePath("light"),
-			glamour.WithWordWrap(120),
-		)
-	case "notty":
-		renderer, err = glamour.NewTermRenderer(
-			glamour.WithStylePath("notty"),
-			glamour.WithWordWrap(120),
-		)
-	default:
-		renderer, err = glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
-			glamour.WithWordWrap(120),
-		)
-	}
-	
+	renderer, err := createGlamourRenderer(style)
 	if err != nil {
-		// Fallback to raw markdown if glamour fails
-		fmt.Print(markdownContent)
-		return nil
+		return fallbackToRawMarkdown(markdownContent)
 	}
 
-	// Render the markdown
 	rendered, err := renderer.Render(markdownContent)
 	if err != nil {
-		// Fallback to raw markdown if rendering fails
-		fmt.Print(markdownContent)
-		return nil
+		return fallbackToRawMarkdown(markdownContent)
 	}
 
 	fmt.Print(rendered)
+	return nil
+}
+
+// createGlamourRenderer creates a renderer based on style using a map-based approach
+func createGlamourRenderer(style string) (*glamour.TermRenderer, error) {
+	rendererConfigs := map[string]func() (*glamour.TermRenderer, error){
+		"dark": func() (*glamour.TermRenderer, error) {
+			return glamour.NewTermRenderer(
+				glamour.WithStylePath("dark"),
+				glamour.WithWordWrap(120),
+			)
+		},
+		"light": func() (*glamour.TermRenderer, error) {
+			return glamour.NewTermRenderer(
+				glamour.WithStylePath("light"),
+				glamour.WithWordWrap(120),
+			)
+		},
+		"notty": func() (*glamour.TermRenderer, error) {
+			return glamour.NewTermRenderer(
+				glamour.WithStylePath("notty"),
+				glamour.WithWordWrap(120),
+			)
+		},
+	}
+	
+	if createFunc, exists := rendererConfigs[style]; exists {
+		return createFunc()
+	}
+	
+	// Default case
+	return glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(120),
+	)
+}
+
+func fallbackToRawMarkdown(markdownContent string) error {
+	fmt.Print(markdownContent)
 	return nil
 }
 

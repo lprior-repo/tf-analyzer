@@ -124,8 +124,8 @@ make build
    GITHUB_ORGS=hashicorp,terraform-providers,gruntwork-io
    
    # Optional
-   MAX_CONCURRENT_CLONES=100
-   MAX_CONCURRENT_ANALYZERS=100
+   CLONE_CONCURRENCY=100
+   MAX_GOROUTINES=100
    ```
 
 3. **Run the analyzer**:

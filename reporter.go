@@ -31,9 +31,14 @@ type GlobalSummary struct {
 	GlobalBackendSummary GlobalBackendSummary `json:"global_backend_summary"`
 }
 
+type RepositoryForJSON struct {
+	RepositoryAnalysis
+	Organization string `json:"organization,omitempty"`
+}
+
 type ComprehensiveReport struct {
-	Repositories  []RepositoryAnalysis `json:"repositories"`
-	GlobalSummary GlobalSummary        `json:"global_summary"`
+	Repositories  []RepositoryForJSON `json:"repositories"`
+	GlobalSummary GlobalSummary       `json:"global_summary"`
 }
 
 type Reporter struct {
@@ -108,8 +113,11 @@ func getBackendRegion(config *BackendConfig) string {
 func (r *Reporter) GenerateReport() ComprehensiveReport {
 	successfulResults := r.getSuccessfulResults()
 	
-	repositories := lo.Map(successfulResults, func(result AnalysisResult, _ int) RepositoryAnalysis {
-		return result.Analysis
+	repositories := lo.Map(successfulResults, func(result AnalysisResult, _ int) RepositoryForJSON {
+		return RepositoryForJSON{
+			RepositoryAnalysis: result.Analysis,
+			Organization:       result.Organization,
+		}
 	})
 
 	globalSummary := r.generateGlobalSummary()
@@ -122,11 +130,14 @@ func (r *Reporter) GenerateReport() ComprehensiveReport {
 
 func (r *Reporter) PrintSummaryReport() error {
 	report := r.GenerateReport()
+	repositories := lo.Map(report.Repositories, func(repo RepositoryForJSON, _ int) RepositoryAnalysis {
+		return repo.RepositoryAnalysis
+	})
 	
 	printReportHeader()
 	printOverallStats(report)
 	printBackendSummary(report.GlobalSummary.GlobalBackendSummary)
-	printRepositorySummaries(report.Repositories)
+	printRepositorySummaries(repositories)
 	printReportFooter()
 
 	return nil
@@ -142,11 +153,15 @@ func printReportHeader() {
 }
 
 func printOverallStats(report ComprehensiveReport) {
-	totalProviders := calculateTotalProviders(report.Repositories)
-	totalModules := calculateTotalModules(report.Repositories)
-	totalResources := calculateTotalResources(report.Repositories)
-	totalVariables := calculateTotalVariables(report.Repositories)
-	totalOutputs := calculateTotalOutputs(report.Repositories)
+	repositories := lo.Map(report.Repositories, func(repo RepositoryForJSON, _ int) RepositoryAnalysis {
+		return repo.RepositoryAnalysis
+	})
+	
+	totalProviders := calculateTotalProviders(repositories)
+	totalModules := calculateTotalModules(repositories)
+	totalResources := calculateTotalResources(repositories)
+	totalVariables := calculateTotalVariables(repositories)
+	totalOutputs := calculateTotalOutputs(repositories)
 
 	slog.Info("Overall Statistics",
 		"total_repositories", report.GlobalSummary.TotalReposScanned,
@@ -230,34 +245,41 @@ func extractRepoName(path string) string {
 	return ""
 }
 
-func calculateTotalProviders(repositories []RepositoryAnalysis) int {
+// Generic sum function to eliminate duplicate reduce patterns
+func sumRepoProperty(repositories []RepositoryAnalysis, extractor func(RepositoryAnalysis) int) int {
 	return lo.Reduce(repositories, func(acc int, repo RepositoryAnalysis, _ int) int {
-		return acc + repo.Providers.UniqueProviderCount
+		return acc + extractor(repo)
 	}, 0)
+}
+
+func calculateTotalProviders(repositories []RepositoryAnalysis) int {
+	return sumRepoProperty(repositories, func(repo RepositoryAnalysis) int {
+		return repo.Providers.UniqueProviderCount
+	})
 }
 
 func calculateTotalModules(repositories []RepositoryAnalysis) int {
-	return lo.Reduce(repositories, func(acc int, repo RepositoryAnalysis, _ int) int {
-		return acc + repo.Modules.TotalModuleCalls
-	}, 0)
+	return sumRepoProperty(repositories, func(repo RepositoryAnalysis) int {
+		return repo.Modules.TotalModuleCalls
+	})
 }
 
 func calculateTotalResources(repositories []RepositoryAnalysis) int {
-	return lo.Reduce(repositories, func(acc int, repo RepositoryAnalysis, _ int) int {
-		return acc + repo.ResourceAnalysis.TotalResourceCount
-	}, 0)
+	return sumRepoProperty(repositories, func(repo RepositoryAnalysis) int {
+		return repo.ResourceAnalysis.TotalResourceCount
+	})
 }
 
 func calculateTotalVariables(repositories []RepositoryAnalysis) int {
-	return lo.Reduce(repositories, func(acc int, repo RepositoryAnalysis, _ int) int {
-		return acc + len(repo.VariableAnalysis.DefinedVariables)
-	}, 0)
+	return sumRepoProperty(repositories, func(repo RepositoryAnalysis) int {
+		return len(repo.VariableAnalysis.DefinedVariables)
+	})
 }
 
 func calculateTotalOutputs(repositories []RepositoryAnalysis) int {
-	return lo.Reduce(repositories, func(acc int, repo RepositoryAnalysis, _ int) int {
-		return acc + repo.OutputAnalysis.OutputCount
-	}, 0)
+	return sumRepoProperty(repositories, func(repo RepositoryAnalysis) int {
+		return repo.OutputAnalysis.OutputCount
+	})
 }
 
 func (r *Reporter) ExportJSON(filename string) error {
@@ -354,6 +376,10 @@ func (r *Reporter) appendReportHeader(builder *strings.Builder) {
 }
 
 func (r *Reporter) appendExecutiveSummary(builder *strings.Builder, report *ComprehensiveReport, skippedRepos []string) {
+	repositories := lo.Map(report.Repositories, func(repo RepositoryForJSON, _ int) RepositoryAnalysis {
+		return repo.RepositoryAnalysis
+	})
+	
 	builder.WriteString("## Executive Summary\n\n")
 	fmt.Fprintf(builder, "- **Total repositories scanned**: %d\n", 
 		report.GlobalSummary.TotalReposScanned)
@@ -362,15 +388,15 @@ func (r *Reporter) appendExecutiveSummary(builder *strings.Builder, report *Comp
 	fmt.Fprintf(builder, "- **Repositories skipped (no relevant content)**: %d\n", 
 		len(skippedRepos))
 	fmt.Fprintf(builder, "- **Total providers found**: %d\n", 
-		calculateTotalProviders(report.Repositories))
+		calculateTotalProviders(repositories))
 	fmt.Fprintf(builder, "- **Total modules found**: %d\n", 
-		calculateTotalModules(report.Repositories))
+		calculateTotalModules(repositories))
 	fmt.Fprintf(builder, "- **Total resources found**: %d\n", 
-		calculateTotalResources(report.Repositories))
+		calculateTotalResources(repositories))
 	fmt.Fprintf(builder, "- **Total variables found**: %d\n", 
-		calculateTotalVariables(report.Repositories))
+		calculateTotalVariables(repositories))
 	fmt.Fprintf(builder, "- **Total outputs found**: %d\n", 
-		calculateTotalOutputs(report.Repositories))
+		calculateTotalOutputs(repositories))
 	builder.WriteString("\n")
 }
 
@@ -403,7 +429,7 @@ func (r *Reporter) appendRepositoryDetails(builder *strings.Builder, report *Com
 	builder.WriteString("|------------|-----------|---------|-----------|-----------|---------|---------|--------|\n")
 	
 	for _, repo := range report.Repositories {
-		r.appendRepositoryRow(builder, repo)
+		r.appendRepositoryRow(builder, repo.RepositoryAnalysis)
 	}
 	builder.WriteString("\n")
 }
@@ -443,8 +469,12 @@ func (r *Reporter) appendProviderDetails(builder *strings.Builder, report *Compr
 		return
 	}
 	
+	repositories := lo.Map(report.Repositories, func(repo RepositoryForJSON, _ int) RepositoryAnalysis {
+		return repo.RepositoryAnalysis
+	})
+	
 	builder.WriteString("## Provider Usage Details\n\n")
-	providerUsage := r.aggregateProviderUsage(report.Repositories)
+	providerUsage := r.aggregateProviderUsage(repositories)
 	
 	if len(providerUsage) > 0 {
 		builder.WriteString("| Provider | Version | Repository Count |\n")
@@ -459,7 +489,10 @@ func (r *Reporter) appendProviderDetails(builder *strings.Builder, report *Compr
 }
 
 func (r *Reporter) appendUntaggedResourcesSummary(builder *strings.Builder, report *ComprehensiveReport) {
-	untaggedResourcesCount := r.calculateTotalUntaggedResources(report.Repositories)
+	repositories := lo.Map(report.Repositories, func(repo RepositoryForJSON, _ int) RepositoryAnalysis {
+		return repo.RepositoryAnalysis
+	})
+	untaggedResourcesCount := r.calculateTotalUntaggedResources(repositories)
 	if untaggedResourcesCount == 0 {
 		return
 	}
@@ -472,7 +505,7 @@ func (r *Reporter) appendUntaggedResourcesSummary(builder *strings.Builder, repo
 	builder.WriteString("| Repository | Untagged Resources |\n")
 	builder.WriteString("|------------|--------------------|\n")
 	
-	for _, repo := range report.Repositories {
+	for _, repo := range repositories {
 		if len(repo.ResourceAnalysis.UntaggedResources) > 0 {
 			repoName := extractRepoName(repo.RepositoryPath)
 			fmt.Fprintf(builder, "| %s | %d |\n",
@@ -530,9 +563,9 @@ func (r *Reporter) aggregateProviderUsage(repositories []RepositoryAnalysis) []P
 }
 
 func (r *Reporter) calculateTotalUntaggedResources(repositories []RepositoryAnalysis) int {
-	return lo.Reduce(repositories, func(acc int, repo RepositoryAnalysis, _ int) int {
-		return acc + len(repo.ResourceAnalysis.UntaggedResources)
-	}, 0)
+	return sumRepoProperty(repositories, func(repo RepositoryAnalysis) int {
+		return len(repo.ResourceAnalysis.UntaggedResources)
+	})
 }
 
 func convertMarkdownToTerminal(markdown string) string {

@@ -203,6 +203,53 @@ func executeCloneCommandWithRecovery(ctx context.Context, op CloneOperation, log
 	return nil
 }
 
+func executeCloneCommandWithProgress(ctx context.Context, op CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
+	if tuiProgress != nil {
+		tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, "Starting clone operation...", 0, 1, 0, 0)
+	}
+
+	// Start a goroutine to show progress during cloning
+	progressDone := make(chan bool)
+	if tuiProgress != nil {
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			steps := []string{
+				"Fetching repository list...",
+				"Authenticating with GitHub...",
+				"Cloning repositories...",
+				"Processing repositories...",
+			}
+			stepIndex := 0
+			
+			for {
+				select {
+				case <-ticker.C:
+					if stepIndex < len(steps) {
+						tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, steps[stepIndex], stepIndex, len(steps), 0, 0)
+						stepIndex++
+					}
+				case <-progressDone:
+					return
+				}
+			}
+		}()
+	}
+
+	err := executeCloneCommandWithRecovery(ctx, op, logger)
+	
+	if tuiProgress != nil {
+		progressDone <- true
+		if err != nil {
+			tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, "❌ Clone operation failed", 0, 1, 0, 0)
+		} else {
+			tuiProgress.UpdateProgressWithPhase(op.Org, op.Org, "✅ Clone operation completed", 1, 1, 0, 0)
+		}
+	}
+
+	return err
+}
+
 
 func setupWorkspaceWithRecovery(logger *slog.Logger) (string, func(), error) {
 	tempDir, err := createTempDirectoryWithRecovery(logger)
@@ -229,6 +276,23 @@ func executeClonePhaseWithRecovery(ctx context.Context, operation CloneOperation
 		"concurrency", operation.Config.CloneConcurrency)
 
 	cloneErr := executeCloneCommandWithRecovery(ctx, operation, logger)
+	if cloneErr != nil {
+		return fmt.Errorf("ghorg clone failed: %w", cloneErr)
+	}
+
+	logger.Info("Clone operation completed successfully", 
+		"organization", operation.Org,
+		"duration", time.Since(operation.StartTime))
+	return nil
+}
+
+func executeClonePhaseWithProgress(ctx context.Context, operation CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
+	logger.Info("Starting clone operation", 
+		"organization", operation.Org,
+		"temp_dir", operation.TempDir,
+		"concurrency", operation.Config.CloneConcurrency)
+
+	cloneErr := executeCloneCommandWithProgress(ctx, operation, logger, tuiProgress)
 	if cloneErr != nil {
 		return fmt.Errorf("ghorg clone failed: %w", cloneErr)
 	}
