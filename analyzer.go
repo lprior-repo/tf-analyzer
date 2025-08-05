@@ -699,27 +699,57 @@ func logFileProcessingStats(stats FileProcessingStats, logger *slog.Logger) {
 		"files_errored", stats.FilesErrored)
 }
 
+// ParseContext encapsulates parsing parameters following functional programming principles
+type ParseContext[T any] struct {
+	Content   string
+	Filename  string
+	ParseType string
+	Logger    *slog.Logger
+	Parser    func(string, string) T
+}
+
 // Safe parsing functions with error recovery
 // Generic safe parser function to eliminate code duplication
-func parseWithRecovery[T any](content, filename, parseType string, logger *slog.Logger, parser func(string, string) T) T {
+func parseWithRecovery[T any](ctx ParseContext[T]) T {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Debug(parseType+" parsing panic recovered", "panic", r, "file", filename)
+			ctx.Logger.Debug(ctx.ParseType+" parsing panic recovered", "panic", r, "file", ctx.Filename)
 		}
 	}()
-	return parser(content, filename)
+	return ctx.Parser(ctx.Content, ctx.Filename)
 }
 
 func parseBackendSafely(content string, filename string, logger *slog.Logger) *BackendConfig {
-	return parseWithRecovery(content, filename, "Backend", logger, parseBackend)
+	ctx := ParseContext[*BackendConfig]{
+		Content:   content,
+		Filename:  filename,
+		ParseType: "Backend",
+		Logger:    logger,
+		Parser:    parseBackend,
+	}
+	return parseWithRecovery(ctx)
 }
 
 func parseProvidersSafely(content string, filename string, logger *slog.Logger) []ProviderDetail {
-	return parseWithRecovery(content, filename, "Provider", logger, parseProviders)
+	ctx := ParseContext[[]ProviderDetail]{
+		Content:   content,
+		Filename:  filename,
+		ParseType: "Provider",
+		Logger:    logger,
+		Parser:    parseProviders,
+	}
+	return parseWithRecovery(ctx)
 }
 
 func parseModulesSafely(content string, filename string, logger *slog.Logger) []ModuleDetail {
-	return parseWithRecovery(content, filename, "Module", logger, parseModules)
+	ctx := ParseContext[[]ModuleDetail]{
+		Content:   content,
+		Filename:  filename,
+		ParseType: "Module",
+		Logger:    logger,
+		Parser:    parseModules,
+	}
+	return parseWithRecovery(ctx)
 }
 
 func parseResourcesSafely(content string, filename string, logger *slog.Logger) ([]ResourceType, []UntaggedResource) {
@@ -732,11 +762,25 @@ func parseResourcesSafely(content string, filename string, logger *slog.Logger) 
 }
 
 func parseVariablesSafely(content string, filename string, logger *slog.Logger) []VariableDefinition {
-	return parseWithRecovery(content, filename, "Variable", logger, parseVariables)
+	ctx := ParseContext[[]VariableDefinition]{
+		Content:   content,
+		Filename:  filename,
+		ParseType: "Variable",
+		Logger:    logger,
+		Parser:    parseVariables,
+	}
+	return parseWithRecovery(ctx)
 }
 
 func parseOutputsSafely(content string, filename string, logger *slog.Logger) []string {
-	return parseWithRecovery(content, filename, "Output", logger, parseOutputs)
+	ctx := ParseContext[[]string]{
+		Content:   content,
+		Filename:  filename,
+		ParseType: "Output",
+		Logger:    logger,
+		Parser:    parseOutputs,
+	}
+	return parseWithRecovery(ctx)
 }
 
 

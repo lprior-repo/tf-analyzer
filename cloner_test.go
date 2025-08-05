@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -522,5 +523,81 @@ func TestExecuteClonePhaseWithRecovery(t *testing.T) {
 		
 		// The function should return some path (even if clone fails)
 		// Note: orgDir may be empty if clone fails, which is acceptable
+	})
+}
+
+// ============================================================================
+// TUI-FREE CLONER FUNCTION TESTS - Tests for functions without TUI dependencies
+// ============================================================================
+
+// TestExecuteCloneCommand tests clone command execution without TUI
+func TestExecuteCloneCommand(t *testing.T) {
+	t.Run("executes clone command without TUI progress tracking", func(t *testing.T) {
+		// Given: A clone operation without TUI
+		op := CloneOperation{
+			Org:     "test-org",
+			TempDir: t.TempDir(),
+			Config: Config{
+				GitHubToken:      "fake-token",
+				CloneConcurrency: 1,
+			},
+		}
+		ctx := context.Background()
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: executeCloneCommand is called
+		err := executeCloneCommand(ctx, op, logger)
+		
+		// Then: Function should not panic (error is expected due to fake token)
+		// We're testing that the function signature exists and can be called
+		_ = err // Ignore error as we expect it to fail with fake token
+	})
+}
+
+// TestExecuteClonePhase tests clone phase execution without TUI
+func TestExecuteClonePhase(t *testing.T) {
+	t.Run("executes clone phase without TUI progress tracking", func(t *testing.T) {
+		// Given: A clone operation
+		op := CloneOperation{
+			Org:     "test-org", 
+			TempDir: t.TempDir(),
+			Config: Config{
+				GitHubToken:      "fake-token",
+				CloneConcurrency: 1,
+			},
+		}
+		ctx := context.Background()
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: executeClonePhase is called
+		err := executeClonePhase(ctx, op, logger)
+		
+		// Then: Function should not panic
+		_ = err // Error is expected due to fake token
+	})
+}
+
+// TestExecuteCommandWithoutProgressTracking tests command execution without progress tracking
+func TestExecuteCommandWithoutProgressTracking(t *testing.T) {
+	t.Run("executes command without progress tracking", func(t *testing.T) {
+		// Given: A simple command and operation
+		op := CloneOperation{
+			Org:     "test-org",
+			TempDir: t.TempDir(),
+			Config:  Config{GitHubToken: "fake-token"},
+		}
+		ctx := context.Background()
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// Create a simple command that will succeed
+		cmd := exec.Command("echo", "test")
+		
+		// When: executeCommandWithProgressTracking is called
+		err := executeCommandWithProgressTracking(ctx, cmd, op, logger)
+		
+		// Then: No error should occur for a simple echo command
+		if err != nil {
+			t.Errorf("Expected no error for echo command, got %v", err)
+		}
 	})
 }

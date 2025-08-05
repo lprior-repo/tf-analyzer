@@ -24,6 +24,8 @@ const (
 	DefaultMaxGoroutines    = 100
 	DefaultCloneConcurrency = 100
 	DefaultProcessTimeout   = 30 * time.Minute
+	DefaultRetryDelay       = 100 * time.Millisecond // Fast for tests
+	ProductionRetryDelay    = 1 * time.Second        // Production default
 	MaxSafeMaxGoroutines    = 10000
 	MaxSafeCloneConcurrency = 100
 )
@@ -32,6 +34,7 @@ type Config struct {
 	MaxGoroutines    int
 	CloneConcurrency int
 	ProcessTimeout   time.Duration
+	RetryDelay       time.Duration
 	SkipArchived     bool
 	SkipForks        bool
 	GitHubToken      string
@@ -57,14 +60,12 @@ type OrgProcessContext struct {
 	ProcessingCtx ProcessingContext
 	Reporter      *Reporter
 	Logger        *slog.Logger
-	TuiProgress   *TUIProgressChannel
 }
 
 type MultiOrgContext struct {
 	Ctx           context.Context
 	ProcessingCtx ProcessingContext
 	Reporter      *Reporter
-	TuiProgress   *TUIProgressChannel
 }
 
 type FileContent struct {
@@ -215,21 +216,6 @@ func discoverRepositories(tempDir, org string) ([]Repository, error) {
 	return repositories, nil
 }
 
-func discoverRepositoriesWithProgress(tempDir, org string, tuiProgress *TUIProgressChannel) ([]Repository, error) {
-	repositories, err := discoverRepositories(tempDir, org)
-	if err != nil {
-		return nil, err
-	}
-
-	// Update TUI with actual repository count discovered
-	if tuiProgress != nil {
-		tuiProgress.UpdateProgressWithPhase("", org, 
-			fmt.Sprintf("Found %d repositories", len(repositories)), 
-			1, 1, len(repositories), len(repositories))
-	}
-
-	return repositories, nil
-}
 
 
 func createResultChannel(repositories []Repository) chan AnalysisResult {
@@ -241,19 +227,28 @@ func configureWaitGroup(maxGoroutines int) *pool.Pool {
 }
 
 
-func submitRepositoryJobsWithTimeout(repositories []Repository, ctx context.Context, p *pool.Pool, antsPool *ants.Pool, results chan AnalysisResult, logger *slog.Logger) {
-	jobSubmitter := createJobSubmitterWithTimeoutRecovery(antsPool, logger)
+type JobSubmissionContext struct {
+	Repositories []Repository
+	Ctx          context.Context
+	Pool         *pool.Pool
+	AntsPool     *ants.Pool
+	Results      chan AnalysisResult
+	Logger       *slog.Logger
+}
 
-	for _, repo := range repositories {
+func submitRepositoryJobsWithTimeout(jobCtx JobSubmissionContext) {
+	jobSubmitter := createJobSubmitterWithTimeoutRecovery(jobCtx.AntsPool, jobCtx.Logger)
+
+	for _, repo := range jobCtx.Repositories {
 		repo := repo
-		p.Go(func() {
+		jobCtx.Pool.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
-					logger.Error("Repository processing panic recovered", 
+					jobCtx.Logger.Error("Repository processing panic recovered", 
 						"repository", repo.Name, 
 						"organization", repo.Organization, 
 						"panic", r)
-					results <- AnalysisResult{
+					jobCtx.Results <- AnalysisResult{
 						RepoName:     repo.Name,
 						Organization: repo.Organization,
 						Error:        fmt.Errorf("panic during processing: %v", r),
@@ -263,18 +258,18 @@ func submitRepositoryJobsWithTimeout(repositories []Repository, ctx context.Cont
 			
 			// Check context before processing
 			select {
-			case <-ctx.Done():
-				results <- AnalysisResult{
+			case <-jobCtx.Ctx.Done():
+				jobCtx.Results <- AnalysisResult{
 					RepoName:     repo.Name,
 					Organization: repo.Organization,
-					Error:        fmt.Errorf("processing cancelled due to timeout: %v", ctx.Err()),
+					Error:        fmt.Errorf("processing cancelled due to timeout: %v", jobCtx.Ctx.Err()),
 				}
 				return
 			default:
 			}
 			
 			result := jobSubmitter(repo)
-			results <- result
+			jobCtx.Results <- result
 		})
 	}
 }
@@ -328,7 +323,7 @@ func logRepositoryResultStructured(result AnalysisResult, logger *slog.Logger) {
 }
 
 
-func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger, tuiProgress *TUIProgressChannel, totalRepos int) []AnalysisResult {
+func collectResults(results chan AnalysisResult, logger *slog.Logger, totalRepos int) []AnalysisResult {
 	var allResults []AnalysisResult
 	successful := 0
 	failed := 0
@@ -344,11 +339,6 @@ func collectResultsWithRecovery(results chan AnalysisResult, logger *slog.Logger
 		} else {
 			successful++
 			logRepositoryResultStructured(result, logger)
-		}
-		
-		// Update TUI progress with analysis phase
-		if tuiProgress != nil {
-			tuiProgress.UpdateProgressWithPhase(result.RepoName, result.Organization, "Analyzing repositories", len(allResults), totalRepos, len(allResults), totalRepos)
 		}
 		
 		if len(allResults)%50 == 0 {
@@ -405,7 +395,7 @@ func finalizeProcessing(allResults []AnalysisResult, startTime time.Time) {
 }
 
 
-func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx context.Context, processingCtx ProcessingContext, logger *slog.Logger, tuiProgress *TUIProgressChannel) []AnalysisResult {
+func processRepositoriesConcurrently(repositories []Repository, ctx context.Context, processingCtx ProcessingContext, logger *slog.Logger) []AnalysisResult {
 	startTime := time.Now()
 
 	logger.Info("Starting concurrent repository processing with timeout", 
@@ -425,22 +415,28 @@ func processRepositoriesConcurrentlyWithTimeout(repositories []Repository, ctx c
 		}
 	}()
 
-	submitRepositoryJobsWithTimeout(repositories, ctx, p, processingCtx.Pool, results, logger)
+	jobCtx := JobSubmissionContext{
+		Repositories: repositories,
+		Ctx:          ctx,
+		Pool:         p,
+		AntsPool:     processingCtx.Pool,
+		Results:      results,
+		Logger:       logger,
+	}
+	submitRepositoryJobsWithTimeout(jobCtx)
 	waitAndCloseChannel(p, results)
 
-	allResults := collectResultsWithRecovery(results, logger, tuiProgress, len(repositories))
+	allResults := collectResults(results, logger, len(repositories))
 	finalizeProcessing(allResults, startTime)
 
 	return allResults
 }
 
-
-func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingContext, reporter *Reporter, tuiProgress *TUIProgressChannel) error {
+func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingContext, reporter *Reporter) error {
 	multiCtx := MultiOrgContext{
 		Ctx:           ctx,
 		ProcessingCtx: processingCtx,
 		Reporter:      reporter,
-		TuiProgress:   tuiProgress,
 	}
 	
 	return processMultipleOrganizations(multiCtx)
@@ -456,7 +452,6 @@ func processMultipleOrganizations(multiCtx MultiOrgContext) error {
 		repoCount, err := processOrganizationSafely(orgCtx)
 		
 		updateProcessingStats(&stats, repoCount, err != nil)
-		updateTUIProgress(multiCtx.TuiProgress, org, stats, err != nil)
 		
 		logOrganizationCompletion(orgCtx.Logger, repoCount, stats)
 	}
@@ -495,19 +490,13 @@ func createOrgProcessContext(multiCtx MultiOrgContext, org string, index, totalO
 		ProcessingCtx: multiCtx.ProcessingCtx,
 		Reporter:      multiCtx.Reporter,
 		Logger:        orgLogger,
-		TuiProgress:   multiCtx.TuiProgress,
 	}
 }
 
 func processOrganizationSafely(orgCtx OrgProcessContext) (int, error) {
-	updateProgress := ProgressUpdate{
-		Repo: orgCtx.Org, Org: orgCtx.Org, Phase: "Starting organization",
-	}
-	if orgCtx.TuiProgress != nil {
-		orgCtx.TuiProgress.UpdateProgressWithUpdate(updateProgress)
-	}
+	orgCtx.Logger.Info("Starting organization processing", "org", orgCtx.Org)
 	
-	return processOrganizationWithRecovery(orgCtx.Ctx, orgCtx.Org, orgCtx.ProcessingCtx, orgCtx.Reporter, orgCtx.Logger, orgCtx.TuiProgress)
+	return processOrganization(orgCtx.Ctx, orgCtx.Org, orgCtx.ProcessingCtx, orgCtx.Reporter, orgCtx.Logger)
 }
 
 func updateProcessingStats(stats *MultiOrgStats, repoCount int, failed bool) {
@@ -520,28 +509,6 @@ func updateProcessingStats(stats *MultiOrgStats, repoCount int, failed bool) {
 	}
 }
 
-func updateTUIProgress(tuiProgress *TUIProgressChannel, org string, stats MultiOrgStats, failed bool) {
-	if tuiProgress == nil {
-		return
-	}
-	
-	if !failed {
-		tuiProgress.UpdateTotalRepos(stats.TotalReposAcrossOrgs)
-		updateProgress := ProgressUpdate{
-			Repo: org, Org: org, Phase: "Organization completed",
-			Completed: stats.ProcessedRepos, Total: stats.TotalReposAcrossOrgs,
-			RepoCount: stats.ProcessedRepos, TotalRepos: stats.TotalReposAcrossOrgs,
-		}
-		tuiProgress.UpdateProgressWithUpdate(updateProgress)
-	} else {
-		updateProgress := ProgressUpdate{
-			Repo: org, Org: org, Phase: "Organization failed",
-			Completed: stats.ProcessedRepos, Total: stats.TotalReposAcrossOrgs,
-			RepoCount: stats.ProcessedRepos, TotalRepos: stats.TotalReposAcrossOrgs,
-		}
-		tuiProgress.UpdateProgressWithUpdate(updateProgress)
-	}
-}
 
 func logOrganizationCompletion(logger *slog.Logger, repoCount int, stats MultiOrgStats) {
 	if repoCount > 0 {
@@ -567,32 +534,31 @@ func finalizeMutliOrgProcessing(startTime time.Time, stats MultiOrgStats, orgs [
 	return nil
 }
 
-func processOrganizationWithRecovery(ctx context.Context, org string, processingCtx ProcessingContext, reporter *Reporter, logger *slog.Logger, tuiProgress *TUIProgressChannel) (int, error) {
+func processOrganization(ctx context.Context, org string, processingCtx ProcessingContext, reporter *Reporter, logger *slog.Logger) (int, error) {
 	orgCtx := OrgProcessContext{
 		Ctx:           ctx,
 		Org:           org,
 		ProcessingCtx: processingCtx,
 		Reporter:      reporter,
 		Logger:        logger,
-		TuiProgress:   tuiProgress,
 	}
 	
 	return processOrganizationWorkflow(orgCtx)
 }
 
 func processOrganizationWorkflow(orgCtx OrgProcessContext) (int, error) {
-	tempDir, cleanup, err := setupWorkspaceWithRetry(orgCtx.Logger)
+	tempDir, cleanup, err := setupWorkspaceWithRetry(orgCtx.Logger, orgCtx.ProcessingCtx.Config.RetryDelay)
 	if err != nil {
 		return 0, err
 	}
 	defer cleanupWorkspace(cleanup, tempDir, orgCtx.Org, orgCtx.Logger)
 	
 	operation := createCloneOperation(orgCtx.Org, tempDir, orgCtx.ProcessingCtx.Config)
-	if err := executeCloneWithRetry(orgCtx.Ctx, operation, orgCtx.Logger, orgCtx.TuiProgress); err != nil {
+	if err := executeCloneWithoutRetry(orgCtx.Ctx, operation, orgCtx.Logger, orgCtx.ProcessingCtx.Config.RetryDelay); err != nil {
 		return 0, err
 	}
 	
-	repositories, err := discoverRepositoriesWithTracking(tempDir, orgCtx.Org, orgCtx.TuiProgress)
+	repositories, err := discoverRepositoriesWrapper(tempDir, orgCtx.Org)
 	if err != nil {
 		return 0, err
 	}
@@ -603,7 +569,7 @@ func processOrganizationWorkflow(orgCtx OrgProcessContext) (int, error) {
 	return len(repositories), nil
 }
 
-func setupWorkspaceWithRetry(logger *slog.Logger) (string, func(), error) {
+func setupWorkspaceWithRetry(logger *slog.Logger, retryDelay time.Duration) (string, func(), error) {
 	var tempDir string
 	var cleanup func()
 	var setupErr error
@@ -614,7 +580,7 @@ func setupWorkspaceWithRetry(logger *slog.Logger) (string, func(), error) {
 			break
 		}
 		logger.Warn("Workspace setup failed, retrying", "attempt", attempt, "error", setupErr)
-		time.Sleep(time.Duration(attempt) * time.Second)
+		time.Sleep(time.Duration(attempt) * retryDelay)
 	}
 	
 	if setupErr != nil {
@@ -630,15 +596,15 @@ func cleanupWorkspace(cleanup func(), tempDir, org string, logger *slog.Logger) 
 	logger.Info("Cleanup completed", "temp_dir", tempDir, "organization", org)
 }
 
-func executeCloneWithRetry(ctx context.Context, operation CloneOperation, logger *slog.Logger, tuiProgress *TUIProgressChannel) error {
+func executeCloneWithoutRetry(ctx context.Context, operation CloneOperation, logger *slog.Logger, retryDelay time.Duration) error {
 	var cloneErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		cloneErr = executeClonePhaseWithProgress(ctx, operation, logger, tuiProgress)
+		cloneErr = executeClonePhase(ctx, operation, logger)
 		if cloneErr == nil {
 			break
 		}
 		logger.Warn("Clone failed, retrying", "attempt", attempt, "error", cloneErr)
-		time.Sleep(time.Duration(attempt*2) * time.Second)
+		time.Sleep(time.Duration(attempt*2) * retryDelay)
 	}
 	
 	if cloneErr != nil {
@@ -648,16 +614,8 @@ func executeCloneWithRetry(ctx context.Context, operation CloneOperation, logger
 	return nil
 }
 
-func discoverRepositoriesWithTracking(tempDir, org string, tuiProgress *TUIProgressChannel) ([]Repository, error) {
-	updateProgress := ProgressUpdate{
-		Repo: org, Org: org, Phase: "Discovering repositories",
-		Completed: 1, Total: 1,
-	}
-	if tuiProgress != nil {
-		tuiProgress.UpdateProgressWithUpdate(updateProgress)
-	}
-	
-	repositories, discoveryErr := discoverRepositoriesWithProgress(tempDir, org, tuiProgress)
+func discoverRepositoriesWrapper(tempDir, org string) ([]Repository, error) {
+	repositories, discoveryErr := discoverRepositories(tempDir, org)
 	if discoveryErr != nil {
 		return nil, fmt.Errorf("failed to discover repositories: %w", discoveryErr)
 	}
@@ -666,20 +624,13 @@ func discoverRepositoriesWithTracking(tempDir, org string, tuiProgress *TUIProgr
 }
 
 func analyzeRepositoriesConcurrently(orgCtx OrgProcessContext, repositories []Repository) []AnalysisResult {
-	updateProgress := ProgressUpdate{
-		Repo: "", Org: orgCtx.Org, Phase: "Starting analysis",
-		Completed: 0, Total: len(repositories),
-		RepoCount: 0, TotalRepos: len(repositories),
-	}
-	if orgCtx.TuiProgress != nil {
-		orgCtx.TuiProgress.UpdateProgressWithUpdate(updateProgress)
-	}
+	orgCtx.Logger.Info("Starting analysis", "org", orgCtx.Org, "repositories_count", len(repositories))
 
 	analysisCtx, analysisCancel := context.WithTimeout(orgCtx.Ctx, orgCtx.ProcessingCtx.Config.ProcessTimeout)
 	defer analysisCancel()
 	
 	repoLogger := slog.With("organization", orgCtx.Org)
-	return processRepositoriesConcurrentlyWithTimeout(repositories, analysisCtx, orgCtx.ProcessingCtx, repoLogger, orgCtx.TuiProgress)
+	return processRepositoriesConcurrently(repositories, analysisCtx, orgCtx.ProcessingCtx, repoLogger)
 }
 
 
@@ -709,10 +660,17 @@ func createConfigFromEnv(envVars map[string]string) Config {
 		return defaultValue
 	}
 
+	// Use faster retry delay for tests, production delay for production
+	retryDelay := DefaultRetryDelay
+	if getEnvOrDefault("ENVIRONMENT", "test") == "production" {
+		retryDelay = ProductionRetryDelay
+	}
+
 	return Config{
 		MaxGoroutines:    DefaultMaxGoroutines,
 		CloneConcurrency: DefaultCloneConcurrency,
 		ProcessTimeout:   DefaultProcessTimeout,
+		RetryDelay:       retryDelay,
 		SkipArchived:     true,
 		SkipForks:        false,
 		GitHubToken:      getEnvOrDefault("GITHUB_TOKEN", ""),

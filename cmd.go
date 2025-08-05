@@ -28,7 +28,6 @@ var (
 	timeout         time.Duration
 	outputFormat    string
 	outputDir       string
-	noTUI          bool
 	verbose         bool
 	markdownStyle   string
 	rawMarkdown     bool
@@ -61,7 +60,6 @@ multiple GitHub organizations to provide comprehensive insights into your infras
 
 • **Multi-Organization Analysis**: Clone and analyze repositories from multiple GitHub organizations
 • **Concurrent Processing**: High-performance concurrent analysis with configurable limits  
-• **Interactive TUI**: Beautiful terminal interface with real-time progress tracking
 • **Multiple Export Formats**: JSON, CSV, and Markdown report generation
 • **Provider Analysis**: Detect and analyze Terraform providers and their versions
 • **Resource Analysis**: Count and categorize Terraform resources and modules
@@ -75,14 +73,14 @@ multiple GitHub organizations to provide comprehensive insights into your infras
 	# Set your GitHub token
 	export GITHUB_TOKEN=your_token_here
 	
-	# Analyze organizations with interactive TUI (comma-separated)
+	# Analyze organizations (comma-separated)
 	tf-analyzer analyze --orgs "hashicorp,terraform-providers"
 	
 	# Analyze organizations with space-separated list (no quotes needed)
 	tf-analyzer analyze --orgs hashicorp terraform-providers aws-samples
 	
-	# Run without TUI and export to custom directory  
-	tf-analyzer analyze --orgs "my-org" --no-tui --output-dir ./reports
+	# Export to custom directory  
+	tf-analyzer analyze --orgs "my-org" --output-dir ./reports
 
 For more information, visit: https://github.com/your-repo/tf-analyzer
 	`,
@@ -110,8 +108,8 @@ comprehensive Terraform configuration analysis.
 	# Analyze multiple organizations with custom settings (comma-separated)
 	tf-analyzer analyze --orgs "org1,org2,org3" --max-goroutines 50 --timeout 45m
 	
-	# Export reports to specific directory without TUI
-	tf-analyzer analyze --orgs "my-org" --no-tui --output-dir ./custom-reports
+	# Export reports to specific directory
+	tf-analyzer analyze --orgs "my-org" --output-dir ./custom-reports
 	
 	# Verbose logging for debugging
 	tf-analyzer analyze --orgs "test-org" --verbose
@@ -196,7 +194,6 @@ func initializeAnalyzeFlags() {
 	analyzeCmd.Flags().DurationVar(&timeout, "timeout", DefaultProcessTimeout, "processing timeout")
 	analyzeCmd.Flags().StringVar(&outputFormat, "format", "all", "output format: json, csv, markdown, or all")
 	analyzeCmd.Flags().StringVar(&outputDir, "output-dir", ".", "output directory for reports")
-	analyzeCmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable interactive TUI")
 	analyzeCmd.Flags().StringVar(&markdownStyle, "markdown-style", "auto", "markdown rendering style: auto, dark, light, notty")
 	analyzeCmd.Flags().BoolVar(&rawMarkdown, "raw-markdown", false, "print raw markdown without glamour rendering")
 	
@@ -216,7 +213,6 @@ func bindViperFlags() {
 		"timeout":          "processing.timeout",
 		"format":           "output.format",
 		"output-dir":       "output.directory",
-		"no-tui":          "ui.no_tui",
 		"markdown-style":   "ui.markdown_style",
 		"raw-markdown":     "ui.raw_markdown",
 	}
@@ -306,20 +302,16 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	processingCtx, err := setupProcessingResources(config)
+	processingCtx, err := setupAnalysis(config, logger)
 	if err != nil {
 		return err
 	}
 	defer releaseProcessingContext(processingCtx)
-
-	tuiProgress := setupTUIIfEnabled(config, logger)
 	
 	ctx, cancel := context.WithTimeout(context.Background(), config.ProcessTimeout)
 	defer cancel()
 
-	reporter, analysisErr := executeAnalysisWorkflow(ctx, processingCtx, tuiProgress)
-	
-	completeTUIAndWait(tuiProgress, reporter)
+	reporter, analysisErr := executeAnalysisWorkflow(ctx, processingCtx)
 	
 	if analysisErr != nil {
 		logger.Error("Analysis completed with errors", "error", analysisErr)
@@ -329,7 +321,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to generate reports: %w", err)
 	}
 
-	handleNoTUIOutput(reporter, logger)
+	if err := handleConsoleOutput(reporter, logger); err != nil {
+		logger.Error("Failed to display console output", "error", err)
+	}
 	
 	return analysisErr
 }
@@ -361,7 +355,7 @@ func prepareAnalysisConfig() (Config, error) {
 	return config, nil
 }
 
-func setupProcessingResources(config Config) (ProcessingContext, error) {
+func setupAnalysis(config Config, logger *slog.Logger) (ProcessingContext, error) {
 	processingCtx, err := createProcessingContext(config)
 	if err != nil {
 		return ProcessingContext{}, fmt.Errorf("failed to create processing context: %w", err)
@@ -369,58 +363,28 @@ func setupProcessingResources(config Config) (ProcessingContext, error) {
 	return processingCtx, nil
 }
 
-func setupTUIIfEnabled(config Config, logger *slog.Logger) *TUIProgressChannel {
-	if noTUI {
-		return nil
-	}
-
-	totalRepos := estimateRepositoryCount(config)
-	tuiProgress := NewTUIProgressChannel(totalRepos)
-	ctx := context.Background()
-	tuiProgress.Start(ctx)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("TUI panic recovered", "panic", r)
-			}
-		}()
-		if err := tuiProgress.Run(); err != nil {
-			logger.Error("TUI error", "error", err)
-		}
-	}()
-
-	return tuiProgress
-}
-
-func executeAnalysisWorkflow(ctx context.Context, processingCtx ProcessingContext, tuiProgress *TUIProgressChannel) (*Reporter, error) {
+func executeAnalysisWorkflow(ctx context.Context, processingCtx ProcessingContext) (*Reporter, error) {
 	reporter := NewReporter()
-	analysisErr := cloneAndAnalyzeMultipleOrgs(ctx, processingCtx, reporter, tuiProgress)
+	analysisErr := cloneAndAnalyzeMultipleOrgs(ctx, processingCtx, reporter)
 	return reporter, analysisErr
 }
 
-func completeTUIAndWait(tuiProgress *TUIProgressChannel, reporter *Reporter) {
-	if tuiProgress != nil {
-		tuiProgress.Complete(reporter.results)
-		time.Sleep(3 * time.Second) // Give time to view results
-		tuiProgress.Cleanup() // Ensure proper terminal cleanup
+func handleConsoleOutput(reporter *Reporter, logger *slog.Logger) error {
+	if err := reporter.PrintSummaryReport(); err != nil {
+		return fmt.Errorf("failed to print summary report: %w", err)
 	}
+	
+	if err := printMarkdownReport(reporter, logger); err != nil {
+		return fmt.Errorf("failed to print markdown report: %w", err)
+	}
+	
+	return nil
 }
 
-func handleNoTUIOutput(reporter *Reporter, logger *slog.Logger) {
-	if noTUI {
-		if err := reporter.PrintSummaryReport(); err != nil {
-			logger.Error("Failed to print summary report", "error", err)
-		}
-		
-		printMarkdownReport(reporter, logger)
-	}
-}
-
-func printMarkdownReport(reporter *Reporter, logger *slog.Logger) {
+func printMarkdownReport(reporter *Reporter, logger *slog.Logger) error {
 	if viper.GetBool("ui.raw_markdown") {
 		reporter.PrintMarkdownToScreen()
-		return
+		return nil
 	}
 
 	style := viper.GetString("ui.markdown_style")
@@ -431,7 +395,10 @@ func printMarkdownReport(reporter *Reporter, logger *slog.Logger) {
 	if err := reporter.PrintMarkdownToScreenWithStyle(style); err != nil {
 		logger.Error("Failed to render markdown", "error", err)
 		reporter.PrintMarkdownToScreen()
+		return err
 	}
+	
+	return nil
 }
 
 func createConfigFromViper() (Config, error) {
@@ -445,12 +412,19 @@ func createConfigFromViper() (Config, error) {
 		}
 	}
 
+	// Use faster retry delay for tests, production delay for production
+	retryDelay := DefaultRetryDelay
+	if viper.GetString("environment") == "production" {
+		retryDelay = ProductionRetryDelay
+	}
+
 	return Config{
 		Organizations:    orgs,
 		GitHubToken:      viper.GetString("github.token"),
 		MaxGoroutines:    viper.GetInt("processing.max_goroutines"),
 		CloneConcurrency: viper.GetInt("processing.clone_concurrency"),
 		ProcessTimeout:   viper.GetDuration("processing.timeout"),
+		RetryDelay:       retryDelay,
 		SkipArchived:     viper.GetBool("github.skip_archived"),
 		SkipForks:        viper.GetBool("github.skip_forks"),
 		BaseURL:          viper.GetString("github.base_url"),
@@ -467,11 +441,6 @@ func validateCLIAnalysisConfig(config Config) error {
 	return validateAnalysisConfiguration(config)
 }
 
-func estimateRepositoryCount(config Config) int {
-	// Conservative estimate: 50 repos per organization
-	// This will be updated with actual counts during cloning
-	return len(config.Organizations) * 50
-}
 
 func generateReports(reporter *Reporter, config Config) error {
 	format := viper.GetString("output.format")
@@ -564,7 +533,6 @@ func showConfig(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Timeout: %v\n", config.ProcessTimeout)
 	fmt.Printf("Output Format: %s\n", viper.GetString("output.format"))
 	fmt.Printf("Output Directory: %s\n", viper.GetString("output.directory"))
-	fmt.Printf("No TUI: %t\n", viper.GetBool("ui.no_tui"))
 	fmt.Printf("Markdown Style: %s\n", viper.GetString("ui.markdown_style"))
 	fmt.Printf("Raw Markdown: %t\n", viper.GetBool("ui.raw_markdown"))
 
@@ -600,7 +568,6 @@ output:
 
 # UI Configuration
 ui:
-  no_tui: false           # Disable interactive TUI
   markdown_style: "auto"  # Markdown rendering style: auto, dark, light, notty
   raw_markdown: false     # Print raw markdown without glamour rendering
 `

@@ -198,18 +198,6 @@ func TestValidateCLIAnalysisConfig(t *testing.T) {
 	}
 }
 
-func TestEstimateRepositoryCount(t *testing.T) {
-	config := Config{
-		Organizations: []string{"org1", "org2", "org3"},
-	}
-	
-	count := estimateRepositoryCount(config)
-	expectedCount := 3 * 50 // 3 orgs * 50 repos per org
-	
-	if count != expectedCount {
-		t.Errorf("Expected %d repositories, got %d", expectedCount, count)
-	}
-}
 
 func TestMaskToken(t *testing.T) {
 	tests := []struct {
@@ -304,7 +292,7 @@ func TestAnalyzeCommandFlags(t *testing.T) {
 	// Test that analyze command has all required flags
 	requiredFlags := []string{
 		"orgs", "token", "max-goroutines", "clone-concurrency", 
-		"timeout", "format", "output-dir", "no-tui", "markdown-style", "raw-markdown",
+		"timeout", "format", "output-dir", "markdown-style", "raw-markdown",
 	}
 
 	for _, flagName := range requiredFlags {
@@ -636,7 +624,6 @@ func TestShowConfig(t *testing.T) {
 		viper.Set("processing.timeout", 45*time.Minute)
 		viper.Set("output.format", "all")
 		viper.Set("output.directory", ".")
-		viper.Set("ui.no_tui", false)
 		viper.Set("ui.markdown_style", "auto")
 		viper.Set("ui.raw_markdown", false)
 
@@ -813,16 +800,16 @@ func TestPrepareAnalysisConfig(t *testing.T) {
 	})
 }
 
-// TestSetupProcessingResources tests processing context setup
-func TestSetupProcessingResources(t *testing.T) {
+// TestCreateProcessingContext tests processing context setup
+func TestCreateProcessingContext(t *testing.T) {
 	t.Run("returns error for invalid config", func(t *testing.T) {
 		// Given: invalid config
 		config := Config{
 			Organizations: []string{}, // Empty orgs will fail
 		}
 		
-		// When: setupProcessingResources is called
-		_, err := setupProcessingResources(config)
+		// When: createProcessingContext is called
+		_, err := createProcessingContext(config)
 		
 		// Then: should return error
 		if err == nil {
@@ -831,26 +818,6 @@ func TestSetupProcessingResources(t *testing.T) {
 	})
 }
 
-// TestSetupTUIIfEnabled tests TUI setup
-func TestSetupTUIIfEnabled(t *testing.T) {
-	t.Run("returns nil when noTUI is true", func(t *testing.T) {
-		// Given: noTUI is true
-		originalNoTUI := noTUI
-		defer func() { noTUI = originalNoTUI }()
-		noTUI = true
-		
-		config := Config{Organizations: []string{"test-org"}}
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		
-		// When: setupTUIIfEnabled is called
-		result := setupTUIIfEnabled(config, logger)
-		
-		// Then: should return nil
-		if result != nil {
-			t.Error("Expected nil when noTUI is true, got non-nil")
-		}
-	})
-}
 
 // TestExecuteAnalysisWorkflow tests workflow execution
 func TestExecuteAnalysisWorkflow(t *testing.T) {
@@ -869,7 +836,7 @@ func TestExecuteAnalysisWorkflow(t *testing.T) {
 		}
 		
 		// When: executeAnalysisWorkflow is called
-		reporter, _ := executeAnalysisWorkflow(ctx, processingCtx, nil)
+		reporter, _ := executeAnalysisWorkflow(ctx, processingCtx)
 		
 		// Then: should handle gracefully
 		if reporter == nil {
@@ -879,48 +846,6 @@ func TestExecuteAnalysisWorkflow(t *testing.T) {
 	})
 }
 
-// TestCompleteTUIAndWait tests TUI completion
-func TestCompleteTUIAndWait(t *testing.T) {
-	t.Run("handles nil TUI gracefully", func(t *testing.T) {
-		// Given: nil TUI progress and reporter
-		reporter := NewReporter()
-		
-		// When: completeTUIAndWait is called
-		// Then: should not panic
-		completeTUIAndWait(nil, reporter)
-	})
-}
-
-// TestHandleNoTUIOutput tests output handling
-func TestHandleNoTUIOutput(t *testing.T) {
-	t.Run("skips output when TUI is enabled", func(t *testing.T) {
-		// Given: noTUI is false (TUI enabled)
-		originalNoTUI := noTUI
-		defer func() { noTUI = originalNoTUI }()
-		noTUI = false
-		
-		reporter := NewReporter()
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		
-		// When: handleNoTUIOutput is called
-		// Then: should not panic and skip output
-		handleNoTUIOutput(reporter, logger)
-	})
-	
-	t.Run("prints output when TUI is disabled", func(t *testing.T) {
-		// Given: noTUI is true (TUI disabled)
-		originalNoTUI := noTUI
-		defer func() { noTUI = originalNoTUI }()
-		noTUI = true
-		
-		reporter := NewReporter()
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		
-		// When: handleNoTUIOutput is called
-		// Then: should not panic
-		handleNoTUIOutput(reporter, logger)
-	})
-}
 
 // TestPrintMarkdownReport tests markdown report printing
 func TestPrintMarkdownReport(t *testing.T) {
@@ -933,7 +858,9 @@ func TestPrintMarkdownReport(t *testing.T) {
 		
 		// When: printMarkdownReport is called
 		// Then: should not panic
-		printMarkdownReport(reporter, logger)
+		if err := printMarkdownReport(reporter, logger); err != nil {
+			t.Errorf("printMarkdownReport should not return error, got: %v", err)
+		}
 	})
 	
 	t.Run("prints styled markdown when configured", func(t *testing.T) {
@@ -946,7 +873,9 @@ func TestPrintMarkdownReport(t *testing.T) {
 		
 		// When: printMarkdownReport is called
 		// Then: should not panic
-		printMarkdownReport(reporter, logger)
+		if err := printMarkdownReport(reporter, logger); err != nil {
+			t.Errorf("printMarkdownReport should not return error, got: %v", err)
+		}
 	})
 }
 
@@ -1234,9 +1163,9 @@ func TestProcessRepositoriesConcurrentlyWithTimeout(t *testing.T) {
 		timeoutCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 
-		// When: processRepositoriesConcurrentlyWithTimeout is called with a proper logger
+		// When: processRepositoriesConcurrently is called with a proper logger
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		results := processRepositoriesConcurrentlyWithTimeout(repositories, timeoutCtx, ctx, logger, nil)
+		results := processRepositoriesConcurrently(repositories, timeoutCtx, ctx, logger)
 
 		// Then: should return empty results
 		if len(results) != 0 {
@@ -1329,43 +1258,18 @@ func TestSubmitRepositoryJobsWithTimeout(t *testing.T) {
 
 		// When: submitRepositoryJobsWithTimeout is called
 		// Then: should not panic
-		submitRepositoryJobsWithTimeout(repositories, timeoutCtx, p, ctx.Pool, results, nil)
-	})
-}
-
-// TestCreateResultsModel tests TUI results model creation
-func TestCreateResultsModel(t *testing.T) {
-	t.Run("creates results model", func(t *testing.T) {
-		// Given: analysis results
-		results := []AnalysisResult{
-			{
-				RepoName:     "repo1",
-				Organization: "org1",
-				Analysis: RepositoryAnalysis{
-					ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
-				},
-			},
+		jobCtx := JobSubmissionContext{
+			Repositories: repositories,
+			Ctx:          timeoutCtx,
+			Pool:         p,
+			AntsPool:     ctx.Pool,
+			Results:      results,
+			Logger:       nil,
 		}
-
-		// When: createResultsModel is called
-		model := createResultsModel(results)
-
-		// Then: should return a model
-		// Note: The exact structure depends on the bubbles table implementation
-		_ = model // Just ensure no panic
-	})
-
-	t.Run("handles empty results", func(t *testing.T) {
-		// Given: empty results
-		results := []AnalysisResult{}
-
-		// When: createResultsModel is called
-		model := createResultsModel(results)
-
-		// Then: should return a model without panic
-		_ = model
+		submitRepositoryJobsWithTimeout(jobCtx)
 	})
 }
+
 
 // ============================================================================
 // ADDITIONAL TESTS (from integration_comprehensive_test.go)
@@ -1396,15 +1300,10 @@ func TestRunAnalyzeIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("handles valid config with no TUI", func(t *testing.T) {
-		// Given: Valid configuration with noTUI enabled
+	t.Run("handles valid config", func(t *testing.T) {
+		// Given: Valid configuration
 		viper.Reset()
 		defer viper.Reset()
-		
-		// Set up environment for test
-		originalNoTUI := noTUI
-		defer func() { noTUI = originalNoTUI }()
-		noTUI = true
 		
 		// Create temp directory for output
 		tempDir := t.TempDir()
@@ -1430,14 +1329,10 @@ func TestRunAnalyzeIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("handles TUI mode configuration", func(t *testing.T) {
-		// Given: TUI mode enabled with very short timeout
+	t.Run("handles configuration with short timeout", func(t *testing.T) {
+		// Given: Configuration with very short timeout
 		viper.Reset()
 		defer viper.Reset()
-		
-		originalNoTUI := noTUI
-		defer func() { noTUI = originalNoTUI }()
-		noTUI = false // Enable TUI
 		
 		tempDir := t.TempDir()
 		
@@ -1476,60 +1371,6 @@ func TestRunAnalyzeIntegration(t *testing.T) {
 	})
 }
 
-// TestTUIComponents tests TUI component edge cases
-func TestTUIComponents(t *testing.T) {
-	t.Run("TUI handles various window sizes", func(t *testing.T) {
-		// Given: TUI model with different window sizes
-		model := NewTUIModel(10)
-		
-		// Test different window size events
-		windowSizes := []struct {
-			width, height int
-		}{
-			{80, 24},
-			{120, 40}, 
-			{40, 10},  // Small window
-			{200, 60}, // Large window
-		}
-		
-		for _, size := range windowSizes {
-			// When: window resize event is sent
-			newModel, _ := model.Update(WindowSizeMsg{Width: size.width, Height: size.height})
-			
-			// Then: should update dimensions without panic
-			if tuiModel, ok := newModel.(TUIModel); ok {
-				if tuiModel.state.Width != size.width || tuiModel.state.Height != size.height {
-					t.Errorf("Expected dimensions %dx%d, got %dx%d", 
-						size.width, size.height, tuiModel.state.Width, tuiModel.state.Height)
-				}
-			}
-		}
-	})
-
-	t.Run("TUI handles progress updates", func(t *testing.T) {
-		// Given: TUI model
-		model := NewTUIModel(100)
-		
-		// Test various progress updates
-		progressUpdates := []ProgressMsg{
-			{Repo: "repo1", Organization: "org1", Completed: 10, Total: 100},
-			{Repo: "repo2", Organization: "org2", Completed: 50, Total: 100},
-			{Repo: "repo3", Organization: "org3", Completed: 100, Total: 100},
-		}
-		
-		for _, progress := range progressUpdates {
-			// When: progress update is sent
-			newModel, _ := model.Update(progress)
-			
-			// Then: should update progress without panic
-			if tuiModel, ok := newModel.(TUIModel); ok {
-				if tuiModel.progress.data.CurrentRepo != progress.Repo {
-					t.Errorf("Expected repo %s, got %s", progress.Repo, tuiModel.progress.data.CurrentRepo)
-				}
-			}
-		}
-	})
-}
 
 // TestMarkdownEdgeCases tests markdown processing edge cases
 func TestMarkdownEdgeCases(t *testing.T) {
@@ -1677,5 +1518,95 @@ func TestErrorRecoveryMechanisms(t *testing.T) {
 			t.Errorf("Expected at least %d repos scanned, got %d", 
 				numGoroutines, report.GlobalSummary.TotalReposScanned)
 		}
+	})
+}
+
+// ============================================================================
+// TUI-FREE FUNCTION TESTS - Tests for functions without TUI dependencies
+// ============================================================================
+
+// TestExecuteAnalysisWorkflowIntegration tests analysis workflow integration
+func TestExecuteAnalysisWorkflowIntegration(t *testing.T) {
+	t.Run("executes analysis workflow without TUI components", func(t *testing.T) {
+		// Given: A valid processing context and configuration
+		config := Config{
+			Organizations:    []string{"test-org"},
+			GitHubToken:      "fake-token",
+			MaxGoroutines:    2,
+			CloneConcurrency: 1,
+			ProcessTimeout:   1 * time.Second,
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		
+		// When: executeAnalysisWorkflow is called
+		reporter, err := executeAnalysisWorkflow(ctx, processingCtx)
+		
+		// Then: Reporter should be returned and function should not panic
+		assert.NotNil(t, reporter)
+		// Note: err might be non-nil due to fake token, but function should not panic
+		_ = err // Explicitly acknowledge that we don't need to check error in this test
+	})
+}
+
+// TestHandleConsoleOutput tests console output handling without TUI
+func TestHandleConsoleOutput(t *testing.T) {
+	t.Run("prints summary report to console", func(t *testing.T) {
+		// Given: A reporter with test data
+		reporter := NewReporter()
+		result := AnalysisResult{
+			RepoName:     "test-repo",
+			Organization: "test-org",
+			Analysis: RepositoryAnalysis{
+				RepositoryPath: "/tmp/test-repo",
+				Providers: ProvidersAnalysis{
+					UniqueProviderCount: 1,
+					ProviderDetails: []ProviderDetail{
+						{Source: "aws", Version: "4.0.0", Regions: []string{"us-east-1"}},
+					},
+				},
+			},
+		}
+		reporter.AddResults([]AnalysisResult{result})
+		
+		logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+		
+		// When: handleConsoleOutput is called
+		err := handleConsoleOutput(reporter, logger)
+		
+		// Then: No error should occur
+		assert.NoError(t, err)
+	})
+}
+
+// TestSetupAnalysis tests analysis setup without TUI
+func TestSetupAnalysis(t *testing.T) {
+	t.Run("sets up analysis without TUI components", func(t *testing.T) {
+		// Given: Valid configuration
+		config := Config{
+			Organizations:    []string{"test-org"},
+			GitHubToken:      "fake-token",
+			MaxGoroutines:    10,
+			CloneConcurrency: 5,
+			ProcessTimeout:   30 * time.Second,
+		}
+		
+		logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+		
+		// When: setupAnalysis is called
+		processingCtx, err := setupAnalysis(config, logger)
+		
+		// Then: Processing context should be created successfully
+		assert.NoError(t, err)
+		assert.NotNil(t, processingCtx.Pool)
+		assert.Equal(t, config.MaxGoroutines, processingCtx.Config.MaxGoroutines)
+		
+		// Cleanup
+		releaseProcessingContext(processingCtx)
 	})
 }

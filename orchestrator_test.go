@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseOrganizationsFromEnv(t *testing.T) {
@@ -312,7 +316,7 @@ func TestGetEnvironmentVariables(t *testing.T) {
 	}
 }
 
-func TestCreateProcessingContext(t *testing.T) {
+func TestCreateProcessingContextWithValidation(t *testing.T) {
 	validConfig := Config{
 		MaxGoroutines:    10,
 		CloneConcurrency: 5,
@@ -1002,5 +1006,111 @@ func TestLogConfiguration(t *testing.T) {
 		// When: logConfiguration is called
 		// Then: should not panic
 		logConfiguration(config)
+	})
+}
+
+// ============================================================================
+// TUI-FREE ORCHESTRATOR FUNCTION TESTS - Tests for functions without TUI dependencies
+// ============================================================================
+
+// TestProcessRepositoriesConcurrently tests repository processing without TUI
+func TestProcessRepositoriesConcurrently(t *testing.T) {
+	t.Run("processes repositories without TUI progress tracking", func(t *testing.T) {
+		// Given: Test repositories and processing context
+		repositories := []Repository{
+			{Name: "test-repo1", Path: "/tmp/test1", Organization: "test-org"},
+			{Name: "test-repo2", Path: "/tmp/test2", Organization: "test-org"},
+		}
+		
+		config := Config{
+			MaxGoroutines:    2,
+			CloneConcurrency: 1,
+			ProcessTimeout:   5 * time.Second,
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		ctx := context.Background()
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: processRepositoriesConcurrently is called
+		results := processRepositoriesConcurrently(repositories, ctx, processingCtx, logger)
+		
+		// Then: Results should be returned without TUI progress updates
+		assert.NotNil(t, results)
+		assert.Len(t, results, len(repositories))
+	})
+}
+
+// TestCloneAndAnalyzeMultipleOrgsCore tests multi-org analysis core functionality
+func TestCloneAndAnalyzeMultipleOrgsCore(t *testing.T) {
+	t.Run("processes multiple orgs without TUI", func(t *testing.T) {
+		// Given: Processing context and reporter
+		config := Config{
+			Organizations:    []string{"test-org"},
+			GitHubToken:      "fake-token",
+			MaxGoroutines:    2,
+			CloneConcurrency: 1,
+			ProcessTimeout:   1 * time.Second,
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		reporter := NewReporter()
+		ctx := context.Background()
+		
+		// When: cloneAndAnalyzeMultipleOrgs is called
+		err = cloneAndAnalyzeMultipleOrgs(ctx, processingCtx, reporter)
+		
+		// Then: Function should not panic (error expected due to fake token)
+		_ = err // Error is expected due to fake token
+	})
+}
+
+// TestProcessOrganization tests organization processing without TUI
+func TestProcessOrganization(t *testing.T) {
+	t.Run("processes organization without TUI updates", func(t *testing.T) {
+		// Given: Organization and processing context
+		org := "test-org"
+		config := Config{
+			GitHubToken:      "fake-token",
+			MaxGoroutines:    2,
+			CloneConcurrency: 1,
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		reporter := NewReporter()
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		ctx := context.Background()
+		
+		// When: processOrganization is called
+		count, err := processOrganization(ctx, org, processingCtx, reporter, logger)
+		
+		// Then: Function should return count and not panic
+		_ = count // Count might be 0 due to fake token
+		_ = err   // Error is expected due to fake token
+	})
+}
+
+// TestDiscoverRepositoriesWrapper tests repository discovery wrapper functionality
+func TestDiscoverRepositoriesWrapper(t *testing.T) {
+	t.Run("discovers repositories without TUI updates", func(t *testing.T) {
+		// Given: Temporary directory and organization
+		tempDir := t.TempDir()
+		org := "test-org"
+		
+		// When: discoverRepositories is called
+		repos, err := discoverRepositories(tempDir, org)
+		
+		// Then: Function should not panic
+		_ = repos // Repos might be empty for non-existent directory
+		_ = err   // Error is expected for non-existent git repos
 	})
 }

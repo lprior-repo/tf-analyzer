@@ -80,3 +80,7 @@ mutants/
 
 coverage.html
 coverage.out
+
+# MCP server audit logs
+logs/*.json
+*audit.json
