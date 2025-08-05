@@ -1,0 +1,46 @@
+# .go-mutesting-quick.yml
+# Quick mutation testing configuration for development feedback
+# Target: Complete under 15 seconds for rapid development iteration
+
+test:
+  command: "go test -v -run=TestAnalyzeHCL -short"
+  timeout: "5s"
+
+mutators:
+  # Essential mutators only - focus on high-impact mutations
+  - name: "conditional-negation"
+    enabled: true
+    
+  - name: "boolean-inversion"
+    enabled: true
+    
+  - name: "binary-operator"
+    enabled: true
+
+# Target only critical core functions for quick feedback
+include:
+  - "analyzer.go"
+
+# Exclude everything else for speed
+exclude:
+  - "*_test.go"
+  - "cloner.go"
+  - "orchestrator.go"
+  - "cmd.go"
+  - "reporter.go"
+  - "markdown.go"
+  - "vendor/*"
+  - ".git/*"
+
+# Lower threshold for quick feedback - focus on catching obvious issues
+threshold: 70
+
+# Don't fail build on low score for development iteration
+fail_on_low_score: false
+
+# Performance optimizations for ultra-fast feedback
+options:
+  parallel: true
+  max_workers: 1
+  timeout_multiplier: 0.3
+  max_mutations: 10

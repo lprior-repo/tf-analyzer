@@ -1,0 +1,91 @@
+# .go-mutesting-tier2.yml
+# Tier 2 mutation testing configuration for comprehensive analysis
+# Target: Complete under 180 seconds with full codebase coverage
+# Focus: All application files with complete mutator coverage
+
+test:
+  command: "go test -v -run=."
+  timeout: "60s"
+
+mutators:
+  # Complete mutator set for comprehensive analysis
+  - name: "binary-operator"
+    enabled: true
+    
+  - name: "conditional-boundaries"
+    enabled: true
+    
+  - name: "conditional-negation"
+    enabled: true
+    
+  - name: "statement-removal"
+    enabled: true
+    
+  - name: "constant-replacement"
+    enabled: true
+    
+  - name: "boolean-inversion"
+    enabled: true
+    
+  # Additional mutators for comprehensive analysis
+  - name: "unary-operator"
+    enabled: true
+    
+  - name: "increment-decrement"
+    enabled: true
+
+# Include all application files for comprehensive coverage
+include:
+  - "analyzer.go"      # Core Terraform parsing and analysis
+  - "orchestrator.go"  # Workflow coordination and error handling  
+  - "cmd.go"          # CLI interface and configuration
+  - "cloner.go"       # Repository management
+  - "reporter.go"     # Report generation
+  - "markdown.go"     # Markdown processing
+
+# Standard exclusions only
+exclude:
+  - "*_test.go"
+  - "vendor/*"
+  - ".git/*"
+  - "*.pb.go"
+  - "*_gen.go"
+
+# Balanced threshold for comprehensive analysis
+threshold: 85
+
+# Fail build if overall codebase doesn't meet standards
+fail_on_low_score: true
+
+# Performance optimizations for full codebase
+options:
+  parallel: true
+  max_workers: 6
+  timeout_multiplier: 2.0
+  
+# Comprehensive mutation strategies
+mutation_strategies:
+  # File-specific thresholds for nuanced quality control
+  file_thresholds:
+    "analyzer.go": 95      # Critical business logic
+    "orchestrator.go": 95  # Critical orchestration  
+    "cmd.go": 95          # Critical CLI interface
+    "cloner.go": 85       # Supporting functionality
+    "reporter.go": 80     # Output formatting
+    "markdown.go": 75     # Text processing
+    
+  # Function pattern targeting across all files
+  critical_patterns:
+    - "validate*"
+    - "parse*"
+    - "extract*"
+    - "process*"
+    - "execute*"
+    - "handle*"
+    
+  # Error handling patterns (critical across all files)
+  error_patterns:
+    - "*Error"
+    - "handleErr*"
+    - "validateErr*"
+    - "processErr*"

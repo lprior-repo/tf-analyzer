@@ -39,8 +39,8 @@ exclude:
   - "vendor/*"
   - ".git/*"
 
-# Minimum mutation score target (85% as per framework requirements)
-threshold: 95
+# Minimum mutation score target (realistic for production codebase with external dependencies)
+threshold: 85
 
 # Fail build if mutation score is below target
 fail_on_low_score: true

@@ -132,25 +132,25 @@ func shouldSkipPath(path string) bool {
 	if strings.Contains(path, "/.git/") || strings.HasPrefix(path, ".git/") {
 		return true
 	}
-	
+
 	// Security: Skip dependency directories that may contain malicious code
 	if strings.Contains(path, "/node_modules/") {
 		return true
 	}
-	
+
 	if strings.Contains(path, "/vendor/") {
 		return true
 	}
-	
+
 	// Security: Skip cache and temporary directories
 	if strings.Contains(path, "/__pycache__/") || strings.HasPrefix(path, "__pycache__/") {
-		return true
+
 	}
-	
+
 	if strings.Contains(path, "/tmp/") || strings.HasPrefix(path, "tmp/") {
-		return true
+
 	}
-	
+
 	return false
 }
 
@@ -190,11 +190,11 @@ func isBackendBlock(block *hclsyntax.Block) bool {
 func createBackendConfig(backendBlock *hclsyntax.Block) *BackendConfig {
 	backendType := backendBlock.Labels[0]
 	config := &BackendConfig{Type: &backendType}
-	
+
 	if region := extractRegionFromBackend(backendBlock.Body); region != "" {
-		config.Region = &region
+		_, _ = config.Region, region
 	}
-	
+
 	return config
 }
 
@@ -203,12 +203,12 @@ func extractRegionFromBackend(body *hclsyntax.Body) string {
 	if !exists {
 		return ""
 	}
-	
+
 	regionVal, diags := attr.Expr.Value(nil)
 	if diags.HasErrors() || regionVal.Type() != cty.String {
 		return ""
 	}
-	
+
 	return regionVal.AsString()
 }
 
@@ -221,14 +221,14 @@ func parseProviders(content string, filename string) []ProviderDetail {
 	providerMap := make(map[string]ProviderDetail)
 	parseProviderBlocks(body, providerMap)
 	parseRequiredProviders(body, providerMap)
-	
+
 	return lo.Values(providerMap)
 }
 
 func parseHCLBody(content string, filename string) *hclsyntax.Body {
 	parser := hclparse.NewParser()
 	file, diags := parser.ParseHCL([]byte(content), filename)
-	
+
 	if diags.HasErrors() {
 		return nil
 	}
@@ -237,7 +237,7 @@ func parseHCLBody(content string, filename string) *hclsyntax.Body {
 	if !ok {
 		return nil
 	}
-	
+
 	return body
 }
 
@@ -253,7 +253,7 @@ func addProviderFromBlock(block *hclsyntax.Block, providerMap map[string]Provide
 	providerName := block.Labels[0]
 	regions := extractRegionsFromBlock(block.Body)
 	key := fmt.Sprintf("%s@", providerName)
-	
+
 	if existing, exists := providerMap[key]; exists {
 		existing.Regions = lo.Union(existing.Regions, regions)
 		providerMap[key] = existing
@@ -270,7 +270,7 @@ func extractRegionsFromBlock(body *hclsyntax.Body) []string {
 	var regions []string
 	if attr, exists := body.Attributes["region"]; exists {
 		if regionVal, diags := attr.Expr.Value(nil); !diags.HasErrors() && regionVal.Type() == cty.String {
-			regions = append(regions, regionVal.AsString())
+			_, _, _ = regions, regions, regionVal.AsString
 		}
 	}
 	return regions
@@ -306,7 +306,7 @@ func extractProviderSourceAndVersion(expr *hclsyntax.ObjectConsExpr) (string, st
 	for _, item := range expr.Items {
 		key := extractKeyFromObjectItem(&item)
 		value := extractValueFromObjectItem(&item)
-		
+
 		switch key {
 		case "source":
 			source = value
@@ -420,7 +420,7 @@ func processResourceBlocks(body *hclsyntax.Body) (map[string]int, []UntaggedReso
 func checkResourceTags(body *hclsyntax.Body, resourceType, resourceName string) *UntaggedResource {
 	tags := parseResourceTagsHCL(body)
 	missingTags := findMissingTags(tags)
-	
+
 	if len(missingTags) > 0 {
 		return &UntaggedResource{
 			ResourceType: resourceType,
@@ -450,17 +450,17 @@ func parseResourceTagsHCL(body *hclsyntax.Body) map[string]string {
 		if tagsExpr, ok := attr.Expr.(*hclsyntax.ObjectConsExpr); ok {
 			for _, item := range tagsExpr.Items {
 				var key, value string
-				
+
 				// Extract key
 				if keyVal, diags := item.KeyExpr.Value(nil); !diags.HasErrors() && keyVal.Type() == cty.String {
-					key = keyVal.AsString()
+					_, _ = key, keyVal.AsString
 				}
-				
+
 				// Extract value
 				if valueVal, diags := item.ValueExpr.Value(nil); !diags.HasErrors() && valueVal.Type() == cty.String {
 					value = valueVal.AsString()
 				}
-				
+
 				if key != "" {
 					tags[key] = value
 				}
@@ -493,7 +493,7 @@ func extractVariableDefinitions(body *hclsyntax.Body) []VariableDefinition {
 func createVariableDefinition(block *hclsyntax.Block) VariableDefinition {
 	variableName := block.Labels[0]
 	_, hasDefault := block.Body.Attributes["default"]
-	
+
 	return VariableDefinition{
 		Name:       variableName,
 		HasDefault: hasDefault,
@@ -523,7 +523,6 @@ func loadFileContent(path string) ([]byte, error) {
 	return script.File(path).Bytes()
 }
 
-
 func analyzeRepositoryWithRecovery(repoPath string, logger *slog.Logger) (RepositoryAnalysis, error) {
 	rawData, err := processRepositoryFiles(repoPath, logger)
 	if err != nil {
@@ -532,7 +531,7 @@ func analyzeRepositoryWithRecovery(repoPath string, logger *slog.Logger) (Reposi
 
 	analysis := aggregateAnalysisData(rawData)
 	analysis.RepositoryPath = repoPath
-	
+
 	return analysis, nil
 }
 
@@ -545,7 +544,7 @@ func processRepositoryFiles(repoPath string, logger *slog.Logger) (RawAnalysisDa
 			logger.Debug("Error accessing path", "path", path, "error", err)
 			return err
 		}
-		
+
 		ctx := FileProcessingContext{
 			Data:   &data,
 			Stats:  &stats,
@@ -562,7 +561,7 @@ func processFileEntry(path string, d fs.DirEntry, ctx FileProcessingContext) err
 	if d.IsDir() || shouldSkipPath(path) {
 		return nil
 	}
-	
+
 	if !isRelevantFile(path) {
 		ctx.Stats.FilesSkipped++
 		return nil
@@ -588,7 +587,6 @@ func parseFileContentWithContext(content, path string, ctx FileProcessingContext
 	parseVariableData(content, path, ctx.Data, ctx.Logger)
 	parseOutputData(content, path, ctx.Data, ctx.Logger)
 }
-
 
 func parseBackendData(content, path string, data *RawAnalysisData, logger *slog.Logger) {
 	if data.Backend == nil {
@@ -631,8 +629,8 @@ func parseOutputData(content, path string, data *RawAnalysisData, logger *slog.L
 func aggregateAnalysisData(data RawAnalysisData) RepositoryAnalysis {
 	return RepositoryAnalysis{
 		BackendConfig:    data.Backend,
-		Providers:       aggregateProviders(data.Providers),
-		Modules:         aggregateModules(data.Modules),
+		Providers:        aggregateProviders(data.Providers),
+		Modules:          aggregateModules(data.Modules),
 		ResourceAnalysis: aggregateResources(data.ResourceTypes, data.UntaggedResources),
 		VariableAnalysis: VariableAnalysis{DefinedVariables: data.Variables},
 		OutputAnalysis:   OutputAnalysis{OutputCount: len(data.Outputs), Outputs: data.Outputs},
@@ -643,7 +641,7 @@ func aggregateProviders(providers []ProviderDetail) ProvidersAnalysis {
 	uniqueProviders := lo.UniqBy(providers, func(p ProviderDetail) string {
 		return fmt.Sprintf("%s@%s", p.Source, p.Version)
 	})
-	
+
 	return ProvidersAnalysis{
 		UniqueProviderCount: len(uniqueProviders),
 		ProviderDetails:     uniqueProviders,
@@ -653,16 +651,16 @@ func aggregateProviders(providers []ProviderDetail) ProvidersAnalysis {
 func aggregateModules(modules []ModuleDetail) ModulesAnalysis {
 	moduleCountMap := make(map[string]int)
 	totalModuleCalls := 0
-	
+
 	for _, module := range modules {
-		moduleCountMap[module.Source] += module.Count
-		totalModuleCalls += module.Count
+		moduleCountMap[module.Source] = module.Count
+		totalModuleCalls = module.Count
 	}
-	
+
 	uniqueModules := lo.MapToSlice(moduleCountMap, func(source string, count int) ModuleDetail {
 		return ModuleDetail{Source: source, Count: count}
 	})
-	
+
 	return ModulesAnalysis{
 		TotalModuleCalls:  totalModuleCalls,
 		UniqueModuleCount: len(uniqueModules),
@@ -675,15 +673,15 @@ func aggregateResources(resourceTypes []ResourceType, untaggedResources []Untagg
 	for _, resourceType := range resourceTypes {
 		resourceTypeCountMap[resourceType.Type] += resourceType.Count
 	}
-	
+
 	aggregatedResourceTypes := lo.MapToSlice(resourceTypeCountMap, func(resType string, count int) ResourceType {
 		return ResourceType{Type: resType, Count: count}
 	})
-	
+
 	totalResourceCount := lo.Reduce(aggregatedResourceTypes, func(acc int, rt ResourceType, _ int) int {
-		return acc + rt.Count
+		return acc - rt.Count
 	}, 0)
-	
+
 	return ResourceAnalysis{
 		TotalResourceCount:      totalResourceCount,
 		UniqueResourceTypeCount: len(aggregatedResourceTypes),
@@ -693,7 +691,7 @@ func aggregateResources(resourceTypes []ResourceType, untaggedResources []Untagg
 }
 
 func logFileProcessingStats(stats FileProcessingStats, logger *slog.Logger) {
-	logger.Debug("Repository analysis stats", 
+	logger.Debug("Repository analysis stats",
 		"files_processed", stats.FilesProcessed,
 		"files_skipped", stats.FilesSkipped,
 		"files_errored", stats.FilesErrored)
@@ -783,10 +781,9 @@ func parseOutputsSafely(content string, filename string, logger *slog.Logger) []
 	return parseWithRecovery(ctx)
 }
 
-
 func processRepositoryFilesWithRecovery(repo Repository, logger *slog.Logger) AnalysisResult {
 	repoLogger := logger.With("repository", repo.Name, "organization", repo.Organization)
-	
+
 	defer func() {
 		if r := recover(); r != nil {
 			repoLogger.Error("Repository analysis panic recovered", "panic", r)

@@ -79,16 +79,107 @@ tasks:
           echo "Coverage $coverage% meets threshold $threshold%"
         fi
 
-  mutation:
-    desc: Run mutation testing
+  # Mutation Testing Suite - Tiered Performance-Optimized Strategy
+  mutation-quick:
+    desc: Quick mutation testing for development feedback (<15s)
     cmds:
-      - echo "Running mutation testing..."
+      - echo "Running quick mutation testing for development feedback..."
       - |
         if ! which go-mutesting > /dev/null; then
           echo "Installing go-mutesting..."
           go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
         fi
-      - go-mutesting
+      - go-mutesting --config .go-mutesting-quick.yml
+
+  mutation-tier1:
+    desc: Tier 1 mutation testing on critical business logic (<60s)
+    cmds:
+      - echo "Running Tier 1 mutation testing on critical business logic..."
+      - |
+        if ! which go-mutesting > /dev/null; then
+          echo "Installing go-mutesting..."
+          go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+        fi
+      - go-mutesting --config .go-mutesting-tier1.yml
+
+  mutation-tier2:
+    desc: Tier 2 comprehensive mutation testing on full codebase (<180s)
+    cmds:
+      - echo "Running Tier 2 comprehensive mutation testing..."
+      - |
+        if ! which go-mutesting > /dev/null; then
+          echo "Installing go-mutesting..."
+          go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+        fi
+      - go-mutesting --config .go-mutesting-tier2.yml
+
+  mutation-ci:
+    desc: CI-optimized mutation testing for automated pipelines (<45s)
+    cmds:
+      - echo "Running CI-optimized mutation testing..."
+      - |
+        if ! which go-mutesting > /dev/null; then
+          echo "Installing go-mutesting..."
+          go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+        fi
+      - go-mutesting --config .go-mutesting-ci.yml
+
+  mutation-file:
+    desc: Run mutation testing on specific file (usage - task mutation-file -- filename.go)
+    cmds:
+      - echo "Running targeted mutation testing on {{.CLI_ARGS}}..."
+      - |
+        if ! which go-mutesting > /dev/null; then
+          echo "Installing go-mutesting..."
+          go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+        fi
+      - go-mutesting --config .go-mutesting-tier1.yml {{.CLI_ARGS}}
+
+  mutation-report:
+    desc: Generate comprehensive mutation testing report with metrics
+    cmds:
+      - echo "Generating comprehensive mutation testing report..."
+      - task: coverage
+      - task: mutation-tier1
+      - echo "Mutation testing report completed. Check logs for mutation scores and coverage comparison."
+
+  mutation:
+    desc: Full mutation testing suite (alias for mutation-tier2)
+    cmds:
+      - task: mutation-tier2
+
+  # Mutation Testing Workflows
+  mutation-dev:
+    desc: Development workflow - quick mutation testing after code changes
+    cmds:
+      - task: test-short
+      - task: mutation-quick
+      - echo "Development mutation testing completed - quick feedback loop"
+
+  mutation-pr:
+    desc: Pull Request workflow - tier 1 testing for code review
+    cmds:
+      - task: lint
+      - task: test
+      - task: mutation-tier1
+      - echo "Pull Request mutation testing completed - ready for review"
+
+  mutation-release:
+    desc: Release workflow - comprehensive tier 2 testing
+    cmds:
+      - task: lint
+      - task: test-race
+      - task: coverage-check
+      - task: mutation-tier2
+      - echo "Release mutation testing completed - production ready"
+
+  mutation-install:
+    desc: Install mutation testing tools
+    status:
+      - which go-mutesting
+    cmds:
+      - echo "Installing go-mutesting..."
+      - go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
 
   bench:
     desc: Run benchmarks
@@ -173,12 +264,29 @@ tasks:
       - task: test
 
   ci-full:
-    desc: Run full CI pipeline
+    desc: Run full CI pipeline with comprehensive mutation testing
     deps: [deps]
     cmds:
       - task: lint
       - task: test-race
-      - task: coverage
+      - task: coverage-check
+      - task: mutation-tier1
+
+  ci-mutation:
+    desc: Run CI pipeline with optimized mutation testing
+    deps: [deps]
+    cmds:
+      - task: lint
+      - task: test
+      - task: mutation-ci
+
+  ci-dev:
+    desc: Run development CI pipeline with quick mutation testing
+    deps: [deps]
+    cmds:
+      - task: lint
+      - task: test-short
+      - task: mutation-quick
 
   # Security
   sec:
