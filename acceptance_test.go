@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ============================================================================
@@ -206,4 +208,77 @@ func loadConfigFromFile(path string) (Config, error) {
 		MaxGoroutines:    20,
 		CloneConcurrency: 10,
 	}, nil
+}
+
+// ============================================================================  
+// REPOSITORY TARGETING ACCEPTANCE TESTS - Real GitHub Repository Tests
+// ============================================================================
+// These tests verify repository targeting works with REAL GitHub repositories
+
+// skipIfNoGitHubToken skips the test if no GitHub token is available
+func skipIfNoGitHubToken(t *testing.T) string {
+	t.Helper()
+	
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		t.Skip("GITHUB_TOKEN environment variable not set - skipping real repository test")
+	}
+	
+	return token
+}
+
+// TestUserTargetsSpecificHashiCorpRepository tests targeting a specific HashiCorp repository
+func TestUserTargetsSpecificHashiCorpRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping real repository test in short mode - requires GitHub access")
+	}
+	
+	token := skipIfNoGitHubToken(t)
+	
+	t.Run("user successfully targets terraform-aws-vault repository", func(t *testing.T) {
+		// GIVEN: User wants to analyze a specific HashiCorp repository
+		config := Config{
+			GitHubToken:      token,
+			Organizations:    []string{"hashicorp"},
+			TargetRepos:      []string{"terraform-aws-vault"},
+			MaxGoroutines:    10,
+			CloneConcurrency: 5,
+			ProcessTimeout:   15 * time.Minute,
+		}
+		
+		// WHEN: User executes targeted analysis workflow
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		
+		results, err := executeTargetedAnalysisWorkflow(ctx, config)
+		
+		// THEN: Analysis should complete successfully
+		if err != nil {
+			t.Fatalf("User workflow should succeed, got error: %v", err)
+		}
+		
+		// AND: Should target exactly one repository
+		if len(results) != 1 {
+			t.Fatalf("User expected exactly 1 repository, got %d", len(results))
+		}
+		
+		result := results[0]
+		if result.RepoName != "terraform-aws-vault" {
+			t.Errorf("User expected 'terraform-aws-vault', got '%s'", result.RepoName)
+		}
+		
+		if result.Organization != "hashicorp" {
+			t.Errorf("User expected 'hashicorp' organization, got '%s'", result.Organization)
+		}
+		
+		// AND: Should provide meaningful analysis for infrastructure planning
+		// (terraform-aws-vault should have variables and outputs for a proper module)
+		if len(result.Analysis.VariableAnalysis.DefinedVariables) == 0 {
+			t.Error("User expected to find variable definitions for module configuration")
+		}
+		
+		if result.Analysis.OutputAnalysis.OutputCount == 0 {
+			t.Error("User expected to find output definitions for module integration")
+		}
+	})
 }

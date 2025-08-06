@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ============================================================================
@@ -345,6 +348,171 @@ func setupTestAnalyzer() *RepositoryAnalyzer {
 	return &RepositoryAnalyzer{
 		// Configuration for testing
 	}
+}
+
+// TestRepositoryTargetingWorkflowIntegration tests the repository targeting workflow
+// without requiring GitHub access
+func TestRepositoryTargetingWorkflowIntegration(t *testing.T) {
+	t.Run("workflow validates targeting configuration", func(t *testing.T) {
+		// GIVEN: Invalid targeting configuration
+		config := Config{
+			GitHubToken:      "test-token", 
+			Organizations:    []string{"test-org"},
+			MaxGoroutines:    10,
+			CloneConcurrency: 5,
+			ProcessTimeout:   30 * time.Second,
+			// Invalid: both target repos and target file specified
+			TargetRepos:     []string{"repo1"},
+			TargetReposFile: "/path/to/file", // Conflict!
+		}
+		
+		// WHEN: Workflow is executed
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		
+		results, err := executeTargetedAnalysisWorkflow(ctx, config)
+		
+		// THEN: Should fail with validation error
+		if err == nil {
+			t.Error("Expected validation error for conflicting configuration")
+		}
+		
+		if results != nil {
+			t.Error("Expected nil results when validation fails")
+		}
+		
+		if err != nil && !strings.Contains(err.Error(), "targeting configuration") {
+			t.Errorf("Expected targeting configuration error, got: %v", err)
+		}
+	})
+	
+	t.Run("workflow creates and releases processing context", func(t *testing.T) {
+		// GIVEN: Valid minimal configuration
+		config := Config{
+			GitHubToken:      "test-token",
+			Organizations:    []string{"test-org"},
+			MaxGoroutines:    10,
+			CloneConcurrency: 5,
+			ProcessTimeout:   30 * time.Second,
+		}
+		
+		// WHEN: Processing context is created
+		processingCtx, err := createProcessingContext(config)
+		
+		// THEN: Should succeed
+		if err != nil {
+			t.Fatalf("Processing context creation should succeed, got: %v", err)
+		}
+		
+		// AND: Should have proper configuration
+		if processingCtx.Config.MaxGoroutines != 10 {
+			t.Errorf("Expected MaxGoroutines 10, got %d", processingCtx.Config.MaxGoroutines)
+		}
+		
+		if processingCtx.Pool == nil {
+			t.Error("Expected goroutine pool to be created")
+		}
+		
+		// AND: Should be releasable without errors
+		releaseProcessingContext(processingCtx)
+	})
+	
+	t.Run("reporter workflow integration", func(t *testing.T) {
+		// GIVEN: A reporter and test results
+		reporter := NewReporter()
+		testResults := []AnalysisResult{
+			{
+				RepoName:     "test-repo",
+				Organization: "test-org",
+				Analysis: RepositoryAnalysis{
+					RepositoryPath:   "/path/to/repo",
+					ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5},
+					Providers:        ProvidersAnalysis{UniqueProviderCount: 2},
+				},
+			},
+		}
+		
+		// WHEN: Results are added and retrieved
+		reporter.AddResults(testResults)
+		retrievedResults := reporter.GetResults()
+		
+		// THEN: Results should be properly stored and retrieved
+		if len(retrievedResults) != 1 {
+			t.Errorf("Expected 1 result, got %d", len(retrievedResults))
+		}
+		
+		if retrievedResults[0].RepoName != "test-repo" {
+			t.Errorf("Expected repo name 'test-repo', got '%s'", retrievedResults[0].RepoName)
+		}
+		
+		if retrievedResults[0].Organization != "test-org" {
+			t.Errorf("Expected organization 'test-org', got '%s'", retrievedResults[0].Organization)
+		}
+	})
+}
+
+// executeTargetedAnalysisWorkflow performs the complete workflow for targeted repository analysis
+func executeTargetedAnalysisWorkflow(ctx context.Context, config Config) ([]AnalysisResult, error) {
+	// 1. Validate targeting configuration
+	if err := validateTargetingConfiguration(config); err != nil {
+		return nil, fmt.Errorf("invalid targeting configuration: %w", err)
+	}
+	
+	// 2. Validate analysis configuration
+	if err := validateAnalysisConfiguration(config); err != nil {
+		return nil, fmt.Errorf("invalid analysis configuration: %w", err)
+	}
+	
+	// 3. Create processing context
+	processingCtx, err := createProcessingContext(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create processing context: %w", err)
+	}
+	defer releaseProcessingContext(processingCtx)
+	
+	// 4. Create reporter for collecting results
+	reporter := NewReporter()
+	
+	// 5. Create logger (quiet for tests)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelError, // Only show errors in integration tests
+	}))
+	
+	// 6. Process all organizations with targeting
+	multiCtx := MultiOrgContext{
+		Ctx:           ctx,
+		ProcessingCtx: processingCtx,
+		Reporter:      reporter,
+	}
+	
+	if err := processMultipleOrganizationsWithTargeting(multiCtx, logger); err != nil {
+		return nil, fmt.Errorf("failed to process organizations: %w", err)
+	}
+	
+	// 7. Return all results
+	return reporter.GetResults(), nil
+}
+
+// processMultipleOrganizationsWithTargeting processes organizations with targeting support
+func processMultipleOrganizationsWithTargeting(multiCtx MultiOrgContext, logger *slog.Logger) error {
+	for _, org := range multiCtx.ProcessingCtx.Config.Organizations {
+		orgCtx := OrgProcessContext{
+			Ctx:           multiCtx.Ctx,
+			Org:           org,
+			ProcessingCtx: multiCtx.ProcessingCtx,
+			Reporter:      multiCtx.Reporter,
+			Logger:        logger,
+		}
+		
+		_, err := processOrganizationWorkflow(orgCtx)
+		if err != nil {
+			logger.Error("Organization processing failed", "org", org, "error", err)
+			// Continue with other organizations instead of failing completely
+			continue
+		}
+	}
+	
+	return nil
 }
 
 // Mock RepositoryAnalyzer for integration testing

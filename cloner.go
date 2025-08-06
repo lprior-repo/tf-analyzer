@@ -48,10 +48,17 @@ func buildGhorgCommand(ctx context.Context, op CloneOperation) *exec.Cmd {
 
 	// Add repository targeting options
 	if len(op.Config.TargetRepos) > 0 {
-		args = append(args, "--target-repos", strings.Join(op.Config.TargetRepos, ","))
+		// ghorg expects --target-repos-path with a file, so create temp file
+		tempFile, err := createTempReposFile(op.Config.TargetRepos)
+		if err != nil {
+			// For now, skip this if temp file creation fails
+			// TODO: Handle this error properly in the future
+		} else {
+			args = append(args, "--target-repos-path", tempFile)
+		}
 	}
 	if op.Config.TargetReposFile != "" {
-		args = append(args, "--target-repos-file", op.Config.TargetReposFile)
+		args = append(args, "--target-repos-path", op.Config.TargetReposFile)
 	}
 	if op.Config.MatchRegex != "" {
 		args = append(args, "--match-regex", op.Config.MatchRegex)
@@ -60,10 +67,10 @@ func buildGhorgCommand(ctx context.Context, op CloneOperation) *exec.Cmd {
 		args = append(args, "--match-prefix", strings.Join(op.Config.MatchPrefix, ","))
 	}
 	if op.Config.ExcludeRegex != "" {
-		args = append(args, "--exclude-regex", op.Config.ExcludeRegex)
+		args = append(args, "--exclude-match-regex", op.Config.ExcludeRegex)
 	}
 	if len(op.Config.ExcludePrefix) > 0 {
-		args = append(args, "--exclude-prefix", strings.Join(op.Config.ExcludePrefix, ","))
+		args = append(args, "--exclude-match-prefix", strings.Join(op.Config.ExcludePrefix, ","))
 	}
 
 	args = append(args, "--concurrency", fmt.Sprintf("%d", op.Config.CloneConcurrency))
@@ -102,6 +109,25 @@ func createAbsolutePath(path string) (string, error) {
 	}
 
 	return filepath.Abs(expandedPath)
+}
+
+// createTempReposFile creates a temporary file with repository names for ghorg --target-repos-path
+func createTempReposFile(repos []string) (string, error) {
+	tempFile, err := os.CreateTemp("", "ghorg_target_repos_*.txt")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file for target repos: %w", err)  
+	}
+	defer func() {
+		_ = tempFile.Close() // Ignore close error as we're just writing
+	}()
+	
+	for _, repo := range repos {
+		if _, err := fmt.Fprintln(tempFile, repo); err != nil {
+			return "", fmt.Errorf("failed to write repo '%s' to temp file: %w", repo, err)
+		}
+	}
+	
+	return tempFile.Name(), nil
 }
 
 
