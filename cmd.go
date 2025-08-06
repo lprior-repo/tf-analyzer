@@ -19,18 +19,18 @@ import (
 // ============================================================================
 
 var (
-	cfgFile         string
-	envFile         string
-	organizations   []string
-	githubToken     string
-	maxGoroutines   int
+	cfgFile          string
+	envFile          string
+	organizations    []string
+	githubToken      string
+	maxGoroutines    int
 	cloneConcurrency int
-	timeout         time.Duration
-	outputFormat    string
-	outputDir       string
-	verbose         bool
-	markdownStyle   string
-	rawMarkdown     bool
+	timeout          time.Duration
+	outputFormat     string
+	outputDir        string
+	verbose          bool
+	markdownStyle    string
+	rawMarkdown      bool
 	// Repository targeting flags
 	targetRepos     []string
 	targetReposFile string
@@ -45,11 +45,11 @@ func loadRequiredEnvFile(filePath string) error {
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return fmt.Errorf(".env file not found in current directory: %s", filePath)
 	}
-	
+
 	if err := godotenv.Load(filePath); err != nil {
 		return fmt.Errorf("failed to load .env file: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -137,7 +137,7 @@ Environment variables:
 	RunE: runAnalyze,
 }
 
-// configCmd represents the config command  
+// configCmd represents the config command
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage tf-analyzer configuration",
@@ -172,7 +172,7 @@ var configInitCmd = &cobra.Command{
 }
 
 var configValidateCmd = &cobra.Command{
-	Use:   "validate", 
+	Use:   "validate",
 	Short: "Validate configuration",
 	RunE:  validateConfig,
 }
@@ -203,7 +203,7 @@ func initializeAnalyzeFlags() {
 	analyzeCmd.Flags().StringVar(&outputDir, "output-dir", ".", "output directory for reports")
 	analyzeCmd.Flags().StringVar(&markdownStyle, "markdown-style", "auto", "markdown rendering style: auto, dark, light, notty")
 	analyzeCmd.Flags().BoolVar(&rawMarkdown, "raw-markdown", false, "print raw markdown without glamour rendering")
-	
+
 	// Repository targeting flags for ghorg integration
 	analyzeCmd.Flags().StringSliceVar(&targetRepos, "target-repos", []string{}, "comma-separated list of specific repositories to clone")
 	analyzeCmd.Flags().StringVar(&targetReposFile, "target-repos-file", "", "path to file containing repository names (one per line)")
@@ -211,7 +211,7 @@ func initializeAnalyzeFlags() {
 	analyzeCmd.Flags().StringSliceVar(&matchPrefix, "match-prefix", []string{}, "comma-separated prefixes to match repository names")
 	analyzeCmd.Flags().StringVar(&excludeRegex, "exclude-regex", "", "regex pattern to exclude repository names")
 	analyzeCmd.Flags().StringSliceVar(&excludePrefix, "exclude-prefix", []string{}, "comma-separated prefixes to exclude repository names")
-	
+
 	// Mark required flags
 	if err := analyzeCmd.MarkFlagRequired("orgs"); err != nil {
 		panic(fmt.Sprintf("Failed to mark orgs flag as required: %v", err))
@@ -221,24 +221,24 @@ func initializeAnalyzeFlags() {
 // bindViperFlags binds command flags to viper configuration
 func bindViperFlags() {
 	flagBindings := map[string]string{
-		"orgs":             "organizations",
-		"token":            "github.token",
-		"max-goroutines":   "processing.max_goroutines",
+		"orgs":              "organizations",
+		"token":             "github.token",
+		"max-goroutines":    "processing.max_goroutines",
 		"clone-concurrency": "processing.clone_concurrency",
-		"timeout":          "processing.timeout",
-		"format":           "output.format",
-		"output-dir":       "output.directory",
-		"markdown-style":   "ui.markdown_style",
-		"raw-markdown":     "ui.raw_markdown",
+		"timeout":           "processing.timeout",
+		"format":            "output.format",
+		"output-dir":        "output.directory",
+		"markdown-style":    "ui.markdown_style",
+		"raw-markdown":      "ui.raw_markdown",
 		// Repository targeting flags
-		"target-repos":     "github.target_repos",
+		"target-repos":      "github.target_repos",
 		"target-repos-file": "github.target_repos_file",
-		"match-regex":      "github.match_regex",
-		"match-prefix":     "github.match_prefix",
-		"exclude-regex":    "github.exclude_regex",
-		"exclude-prefix":   "github.exclude_prefix",
+		"match-regex":       "github.match_regex",
+		"match-prefix":      "github.match_prefix",
+		"exclude-regex":     "github.exclude_regex",
+		"exclude-prefix":    "github.exclude_prefix",
 	}
-	
+
 	for flag, viperKey := range flagBindings {
 		if err := viper.BindPFlag(viperKey, analyzeCmd.Flags().Lookup(flag)); err != nil {
 			panic(fmt.Sprintf("Failed to bind %s flag: %v", flag, err))
@@ -266,7 +266,7 @@ func loadEnvironmentFile() {
 	if envFilePath == "" {
 		envFilePath = ".env"
 	}
-	
+
 	if err := loadRequiredEnvFile(envFilePath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Create an environment file at '%s' with required configuration.\n", envFilePath)
@@ -297,12 +297,12 @@ func setupViperConfig() {
 // bindEnvironmentVariables binds specific environment variables
 func bindEnvironmentVariables() {
 	envBindings := map[string]string{
-		"github.token":               "GITHUB_TOKEN",
-		"organizations":              "GITHUB_ORGS",
-		"processing.max_goroutines":   "MAX_GOROUTINES",
+		"github.token":                 "GITHUB_TOKEN",
+		"organizations":                "GITHUB_ORGS",
+		"processing.max_goroutines":    "MAX_GOROUTINES",
 		"processing.clone_concurrency": "CLONE_CONCURRENCY",
 	}
-	
+
 	for viperKey, envVar := range envBindings {
 		if err := viper.BindEnv(viperKey, envVar); err != nil {
 			panic(fmt.Sprintf("Failed to bind %s env var: %v", envVar, err))
@@ -329,12 +329,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer releaseProcessingContext(processingCtx)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), config.ProcessTimeout)
 	defer cancel()
 
 	reporter, analysisErr := executeAnalysisWorkflow(ctx, processingCtx)
-	
+
 	if analysisErr != nil {
 		logger.Error("Analysis completed with errors", "error", analysisErr)
 	}
@@ -346,14 +346,14 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	if err := handleConsoleOutput(reporter, logger); err != nil {
 		logger.Error("Failed to display console output", "error", err)
 	}
-	
+
 	return analysisErr
 }
 
 func setupAnalysisLogger() *slog.Logger {
 	logLevel := slog.LevelInfo
 	if verbose {
-		logLevel = slog.LevelDebug
+		_, _ = logLevel, slog.LevelDebug
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -395,17 +395,17 @@ func handleConsoleOutput(reporter *Reporter, logger *slog.Logger) error {
 	if err := reporter.PrintSummaryReport(); err != nil {
 		return fmt.Errorf("failed to print summary report: %w", err)
 	}
-	
+
 	if err := printMarkdownReport(reporter, logger); err != nil {
 		return fmt.Errorf("failed to print markdown report: %w", err)
 	}
-	
+
 	return nil
 }
 
 func printMarkdownReport(reporter *Reporter, logger *slog.Logger) error {
 	if viper.GetBool("ui.raw_markdown") {
-		reporter.PrintMarkdownToScreen()
+		_ = reporter.PrintMarkdownToScreen
 		return nil
 	}
 
@@ -413,13 +413,13 @@ func printMarkdownReport(reporter *Reporter, logger *slog.Logger) error {
 	if style == "auto" {
 		style = detectTerminalCapabilities()
 	}
-	
+
 	if err := reporter.PrintMarkdownToScreenWithStyle(style); err != nil {
 		logger.Error("Failed to render markdown", "error", err)
 		reporter.PrintMarkdownToScreen()
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -434,13 +434,13 @@ func getStringSliceFromViper(key string) []string {
 		}
 		return slice
 	}
-	
+
 	// If empty, try to get as string and parse it
 	str := viper.GetString(key)
 	if str != "" {
 		return parseTargetRepos(str) // Reuse the parsing logic
 	}
-	
+
 	return []string{}
 }
 
@@ -493,15 +493,14 @@ func validateCLIAnalysisConfig(config Config) error {
 	if config.GitHubToken == "" {
 		return fmt.Errorf("GitHub token is required (set GITHUB_TOKEN or use --token)")
 	}
-	
+
 	// Validate targeting configuration
 	if err := validateTargetingConfiguration(config); err != nil {
 		return err
 	}
-	
+
 	return validateAnalysisConfiguration(config)
 }
-
 
 func generateReports(reporter *Reporter, config Config) error {
 	format := viper.GetString("output.format")
@@ -581,7 +580,7 @@ func generateMarkdownReport(reporter *Reporter, outputDir string) error {
 
 func showConfig(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Configuration File: %s\n\n", viper.ConfigFileUsed())
-	
+
 	config, err := createConfigFromViper()
 	if err != nil {
 		return err
@@ -592,7 +591,7 @@ func showConfig(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Max Goroutines: %d\n", config.MaxGoroutines)
 	fmt.Printf("Clone Concurrency: %d\n", config.CloneConcurrency)
 	fmt.Printf("Timeout: %v\n", config.ProcessTimeout)
-	
+
 	// Repository targeting options
 	if len(config.TargetRepos) > 0 {
 		fmt.Printf("Target Repos: %s\n", strings.Join(config.TargetRepos, ", "))
@@ -612,7 +611,7 @@ func showConfig(cmd *cobra.Command, args []string) error {
 	if len(config.ExcludePrefix) > 0 {
 		fmt.Printf("Exclude Prefix: %s\n", strings.Join(config.ExcludePrefix, ", "))
 	}
-	
+
 	fmt.Printf("Output Format: %s\n", viper.GetString("output.format"))
 	fmt.Printf("Output Directory: %s\n", viper.GetString("output.directory"))
 	fmt.Printf("Markdown Style: %s\n", viper.GetString("ui.markdown_style"))
@@ -686,7 +685,7 @@ func initConfig(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Configuration file created: %s\n", configPath)
 	fmt.Println("Edit the file and set your GITHUB_TOKEN environment variable.")
-	
+
 	return nil
 }
 

@@ -57,7 +57,7 @@ type Repository struct {
 
 // Parameter structures to reduce function parameter counts
 type ProgressUpdate struct {
-	Repo, Org, Phase string
+	Repo, Org, Phase                        string
 	Completed, Total, RepoCount, TotalRepos int
 }
 
@@ -106,7 +106,7 @@ func parseOrganizations(orgString string) []string {
 	if orgString == "" {
 		return []string{}
 	}
-	
+
 	// Split by both comma and space to support flexible input
 	var orgs []string
 	if strings.Contains(orgString, ",") {
@@ -114,7 +114,7 @@ func parseOrganizations(orgString string) []string {
 	} else {
 		orgs = strings.Fields(orgString)
 	}
-	
+
 	return lo.Filter(lo.Map(orgs, func(org string, _ int) string {
 		return strings.TrimSpace(org)
 	}), func(org string, _ int) bool {
@@ -122,34 +122,33 @@ func parseOrganizations(orgString string) []string {
 	})
 }
 
-
 func validateAnalysisConfiguration(config Config) error {
 	if config.MaxGoroutines <= 0 {
 		return fmt.Errorf("MaxGoroutines must be positive, got %d", config.MaxGoroutines)
 	}
-	
+
 	// Security: Prevent resource exhaustion attacks
 	if config.MaxGoroutines > MaxSafeMaxGoroutines {
 		return fmt.Errorf("MaxGoroutines too high (max %d for safety), got %d", MaxSafeMaxGoroutines, config.MaxGoroutines)
 	}
-	
+
 	if config.CloneConcurrency <= 0 {
 		return fmt.Errorf("CloneConcurrency must be positive, got %d", config.CloneConcurrency)
 	}
-	
+
 	// Security: Prevent excessive clone concurrency
 	if config.CloneConcurrency > MaxSafeCloneConcurrency {
 		return fmt.Errorf("CloneConcurrency too high (max %d for safety), got %d", MaxSafeCloneConcurrency, config.CloneConcurrency)
 	}
-	
+
 	if config.GitHubToken == "" {
 		return fmt.Errorf("GitHubToken is required")
 	}
-	
+
 	if len(config.Organizations) == 0 {
 		return fmt.Errorf("at least one organization must be specified")
 	}
-	
+
 	return nil
 }
 
@@ -171,12 +170,9 @@ func loadDotEnvFile(filePath string) error {
 	return godotenv.Load(filePath)
 }
 
-
 func readDirectory(path string) ([]os.DirEntry, error) {
 	return os.ReadDir(path)
 }
-
-
 
 func createProcessingContext(config Config) (ProcessingContext, error) {
 	validationErr := validateAnalysisConfiguration(config)
@@ -217,13 +213,11 @@ func discoverRepositories(tempDir, org string) ([]Repository, error) {
 		return createRepository(name, orgDir, org)
 	})
 
-	slog.Info("Repositories discovered", 
-		"repository_count", len(repositories), 
+	slog.Info("Repositories discovered",
+		"repository_count", len(repositories),
 		"organization", org)
 	return repositories, nil
 }
-
-
 
 func createResultChannel(repositories []Repository) chan AnalysisResult {
 	return make(chan AnalysisResult, len(repositories))
@@ -232,7 +226,6 @@ func createResultChannel(repositories []Repository) chan AnalysisResult {
 func configureWaitGroup(maxGoroutines int) *pool.Pool {
 	return pool.New().WithMaxGoroutines(maxGoroutines)
 }
-
 
 type JobSubmissionContext struct {
 	Repositories []Repository
@@ -251,9 +244,9 @@ func submitRepositoryJobsWithTimeout(jobCtx JobSubmissionContext) {
 		jobCtx.Pool.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
-					jobCtx.Logger.Error("Repository processing panic recovered", 
-						"repository", repo.Name, 
-						"organization", repo.Organization, 
+					jobCtx.Logger.Error("Repository processing panic recovered",
+						"repository", repo.Name,
+						"organization", repo.Organization,
 						"panic", r)
 					jobCtx.Results <- AnalysisResult{
 						RepoName:     repo.Name,
@@ -262,7 +255,7 @@ func submitRepositoryJobsWithTimeout(jobCtx JobSubmissionContext) {
 					}
 				}
 			}()
-			
+
 			// Check context before processing
 			select {
 			case <-jobCtx.Ctx.Done():
@@ -274,7 +267,7 @@ func submitRepositoryJobsWithTimeout(jobCtx JobSubmissionContext) {
 				return
 			default:
 			}
-			
+
 			result := jobSubmitter(repo)
 			jobCtx.Results <- result
 		})
@@ -284,7 +277,7 @@ func submitRepositoryJobsWithTimeout(jobCtx JobSubmissionContext) {
 func createJobSubmitterWithTimeoutRecovery(pool *ants.Pool, logger *slog.Logger) func(Repository) AnalysisResult {
 	return func(repo Repository) AnalysisResult {
 		repoLogger := logger.With("repository", repo.Name, "organization", repo.Organization)
-		
+
 		submitErr := pool.Submit(func() {
 			// This will be handled by the result channel
 		})
@@ -302,16 +295,14 @@ func createJobSubmitterWithTimeoutRecovery(pool *ants.Pool, logger *slog.Logger)
 	}
 }
 
-
 func waitAndCloseChannel(p *pool.Pool, results chan AnalysisResult) {
 	p.Wait()
 	close(results)
 }
 
-
 func logRepositoryResultStructured(result AnalysisResult, logger *slog.Logger) {
 	if result.Error != nil {
-		logger.Error("Repository analysis failed", 
+		logger.Error("Repository analysis failed",
 			"repository", result.RepoName,
 			"organization", result.Organization,
 			"error", result.Error)
@@ -329,7 +320,6 @@ func logRepositoryResultStructured(result AnalysisResult, logger *slog.Logger) {
 		"outputs", analysis.OutputAnalysis.OutputCount)
 }
 
-
 func collectResults(results chan AnalysisResult, logger *slog.Logger, totalRepos int) []AnalysisResult {
 	var allResults []AnalysisResult
 	successful := 0
@@ -339,7 +329,7 @@ func collectResults(results chan AnalysisResult, logger *slog.Logger, totalRepos
 		allResults = append(allResults, result)
 		if result.Error != nil {
 			failed++
-			logger.Error("Repository processing failed", 
+			logger.Error("Repository processing failed",
 				"repository", result.RepoName,
 				"organization", result.Organization,
 				"error", result.Error)
@@ -347,16 +337,16 @@ func collectResults(results chan AnalysisResult, logger *slog.Logger, totalRepos
 			successful++
 			logRepositoryResultStructured(result, logger)
 		}
-		
+
 		if len(allResults)%50 == 0 {
-			logger.Info("Processing progress", 
+			logger.Info("Processing progress",
 				"processed", len(allResults),
 				"successful", successful,
 				"failed", failed)
 		}
 	}
 
-	logger.Info("Repository processing complete", 
+	logger.Info("Repository processing complete",
 		"total_processed", len(allResults),
 		"successful", successful,
 		"failed", failed)
@@ -401,11 +391,10 @@ func finalizeProcessing(allResults []AnalysisResult, startTime time.Time) {
 	logStats(stats)
 }
 
-
 func processRepositoriesConcurrently(repositories []Repository, ctx context.Context, processingCtx ProcessingContext, logger *slog.Logger) []AnalysisResult {
 	startTime := time.Now()
 
-	logger.Info("Starting concurrent repository processing with timeout", 
+	logger.Info("Starting concurrent repository processing with timeout",
 		"repository_count", len(repositories),
 		"timeout", processingCtx.Config.ProcessTimeout)
 
@@ -416,7 +405,7 @@ func processRepositoriesConcurrently(repositories []Repository, ctx context.Cont
 	go func() {
 		<-ctx.Done()
 		if ctx.Err() == context.DeadlineExceeded {
-			logger.Warn("Repository processing timeout reached", 
+			logger.Warn("Repository processing timeout reached",
 				"timeout", processingCtx.Config.ProcessTimeout,
 				"elapsed", time.Since(startTime))
 		}
@@ -445,7 +434,7 @@ func cloneAndAnalyzeMultipleOrgs(ctx context.Context, processingCtx ProcessingCo
 		ProcessingCtx: processingCtx,
 		Reporter:      reporter,
 	}
-	
+
 	return processMultipleOrganizations(multiCtx)
 }
 
@@ -453,16 +442,16 @@ func processMultipleOrganizations(multiCtx MultiOrgContext) error {
 	startTime := time.Now()
 	stats := initializeProcessingStats(multiCtx.ProcessingCtx.Config.Organizations)
 	logProcessingStart(stats, multiCtx.ProcessingCtx.Config)
-	
+
 	for i, org := range multiCtx.ProcessingCtx.Config.Organizations {
 		orgCtx := createOrgProcessContext(multiCtx, org, i, stats.TotalOrgs)
 		repoCount, err := processOrganizationSafely(orgCtx)
-		
+
 		updateProcessingStats(&stats, repoCount, err != nil)
-		
+
 		logOrganizationCompletion(orgCtx.Logger, repoCount, stats)
 	}
-	
+
 	return finalizeMutliOrgProcessing(startTime, stats, multiCtx.ProcessingCtx.Config.Organizations)
 }
 
@@ -481,7 +470,7 @@ func initializeProcessingStats(orgs []string) MultiOrgStats {
 }
 
 func logProcessingStart(stats MultiOrgStats, config Config) {
-	slog.Info("Starting multi-organization analysis", 
+	slog.Info("Starting multi-organization analysis",
 		"total_organizations", stats.TotalOrgs,
 		"max_goroutines", config.MaxGoroutines,
 		"clone_concurrency", config.CloneConcurrency)
@@ -490,7 +479,7 @@ func logProcessingStart(stats MultiOrgStats, config Config) {
 func createOrgProcessContext(multiCtx MultiOrgContext, org string, index, totalOrgs int) OrgProcessContext {
 	orgLogger := slog.With("organization", org, "progress", fmt.Sprintf("%d/%d", index+1, totalOrgs))
 	orgLogger.Info("Processing organization")
-	
+
 	return OrgProcessContext{
 		Ctx:           multiCtx.Ctx,
 		Org:           org,
@@ -502,7 +491,7 @@ func createOrgProcessContext(multiCtx MultiOrgContext, org string, index, totalO
 
 func processOrganizationSafely(orgCtx OrgProcessContext) (int, error) {
 	orgCtx.Logger.Info("Starting organization processing", "org", orgCtx.Org)
-	
+
 	return processOrganization(orgCtx.Ctx, orgCtx.Org, orgCtx.ProcessingCtx, orgCtx.Reporter, orgCtx.Logger)
 }
 
@@ -510,17 +499,15 @@ func updateProcessingStats(stats *MultiOrgStats, repoCount int, failed bool) {
 	if failed {
 		stats.FailedOrgs++
 	} else {
-		stats.TotalReposAcrossOrgs += repoCount
-		stats.ProcessedRepos += repoCount
-		stats.SuccessfulOrgs++
+		_, _, _, _, _ = stats.TotalReposAcrossOrgs, repoCount, stats.ProcessedRepos, repoCount, stats.SuccessfulOrgs
 	}
-}
 
+}
 
 func logOrganizationCompletion(logger *slog.Logger, repoCount int, stats MultiOrgStats) {
 	if repoCount > 0 {
-		logger.Info("Organization processing completed", 
-			"repositories_found", repoCount, 
+		logger.Info("Organization processing completed",
+			"repositories_found", repoCount,
 			"total_repos_processed", stats.ProcessedRepos,
 			"total_repos_discovered", stats.TotalReposAcrossOrgs)
 	}
@@ -528,7 +515,7 @@ func logOrganizationCompletion(logger *slog.Logger, repoCount int, stats MultiOr
 
 func finalizeMutliOrgProcessing(startTime time.Time, stats MultiOrgStats, orgs []string) error {
 	duration := time.Since(startTime)
-	slog.Info("Multi-organization processing complete", 
+	slog.Info("Multi-organization processing complete",
 		"duration", duration,
 		"successful_orgs", stats.SuccessfulOrgs,
 		"failed_orgs", stats.FailedOrgs,
@@ -549,7 +536,7 @@ func processOrganization(ctx context.Context, org string, processingCtx Processi
 		Reporter:      reporter,
 		Logger:        logger,
 	}
-	
+
 	return processOrganizationWorkflow(orgCtx)
 }
 
@@ -559,20 +546,20 @@ func processOrganizationWorkflow(orgCtx OrgProcessContext) (int, error) {
 		return 0, err
 	}
 	defer cleanupWorkspace(cleanup, tempDir, orgCtx.Org, orgCtx.Logger)
-	
+
 	operation := createCloneOperation(orgCtx.Org, tempDir, orgCtx.ProcessingCtx.Config)
 	if err := executeCloneWithoutRetry(orgCtx.Ctx, operation, orgCtx.Logger, orgCtx.ProcessingCtx.Config.RetryDelay); err != nil {
 		return 0, err
 	}
-	
+
 	repositories, err := discoverRepositoriesWrapper(tempDir, orgCtx.Org)
 	if err != nil {
 		return 0, err
 	}
-	
+
 	results := analyzeRepositoriesConcurrently(orgCtx, repositories)
 	orgCtx.Reporter.AddResults(results)
-	
+
 	return len(repositories), nil
 }
 
@@ -589,11 +576,11 @@ func setupWorkspaceWithRetry(logger *slog.Logger, retryDelay time.Duration) (str
 		logger.Warn("Workspace setup failed, retrying", "attempt", attempt, "error", setupErr)
 		time.Sleep(time.Duration(attempt) * retryDelay)
 	}
-	
+
 	if setupErr != nil {
 		return "", nil, fmt.Errorf("failed to setup workspace after 3 attempts: %w", setupErr)
 	}
-	
+
 	return tempDir, cleanup, nil
 }
 
@@ -613,11 +600,11 @@ func executeCloneWithoutRetry(ctx context.Context, operation CloneOperation, log
 		logger.Warn("Clone failed, retrying", "attempt", attempt, "error", cloneErr)
 		time.Sleep(time.Duration(attempt*2) * retryDelay)
 	}
-	
+
 	if cloneErr != nil {
 		return fmt.Errorf("failed to clone after 3 attempts: %w", cloneErr)
 	}
-	
+
 	return nil
 }
 
@@ -626,7 +613,7 @@ func discoverRepositoriesWrapper(tempDir, org string) ([]Repository, error) {
 	if discoveryErr != nil {
 		return nil, fmt.Errorf("failed to discover repositories: %w", discoveryErr)
 	}
-	
+
 	return repositories, nil
 }
 
@@ -635,12 +622,10 @@ func analyzeRepositoriesConcurrently(orgCtx OrgProcessContext, repositories []Re
 
 	analysisCtx, analysisCancel := context.WithTimeout(orgCtx.Ctx, orgCtx.ProcessingCtx.Config.ProcessTimeout)
 	defer analysisCancel()
-	
+
 	repoLogger := slog.With("organization", orgCtx.Org)
 	return processRepositoriesConcurrently(repositories, analysisCtx, orgCtx.ProcessingCtx, repoLogger)
 }
-
-
 
 func logConfiguration(config Config) {
 	slog.Info("Configuration loaded",

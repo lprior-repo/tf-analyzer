@@ -1,0 +1,68 @@
+# .go-mutesting-consolidated.yml
+# Comprehensive mutation testing configuration for tf-analyzer
+# Based on avito-tech/go-mutesting supported configuration format
+
+# Skip files that don't have corresponding test files
+skip_without_test: false
+
+# Skip files with build tags
+skip_with_build_tags: true
+
+# Output results in JSON format
+json_output: true
+
+# Run in silent mode (minimal output)
+silent_mode: false
+
+# Directories to exclude from mutation testing
+exclude_dirs:
+  - "vendor"
+  - ".git"
+  - "logs"
+
+# Comprehensive mutator configuration
+# All available mutators from avito-tech/go-mutesting
+# Use --disable flag to selectively turn off mutators if needed
+
+# Available mutators (all enabled by default):
+# 
+# ARITHMETIC MUTATORS:
+# arithmetic/assign_invert  - Inverts assignment operators (+= to -=, *= to /=)
+# arithmetic/assignment     - Modifies assignment operations
+# arithmetic/base          - Mutates basic arithmetic operations (+, -, *, /, %)
+# arithmetic/bitwise       - Mutates bitwise operations (&, |, ^, <<, >>)
+#
+# BRANCH MUTATORS:
+# branch/case             - Empties switch case bodies
+# branch/else             - Empties else statement bodies  
+# branch/if               - Empties if statement bodies
+#
+# EXPRESSION MUTATORS:
+# expression/comparison   - Mutates comparison operators (<, <=, >, >=, ==, !=)
+# expression/remove       - Removes logical expressions
+#
+# LOOP MUTATORS:
+# loop/break             - Modifies break statements in loops
+# loop/condition         - Mutates loop conditions
+# loop/range_break       - Modifies range loop break behavior
+#
+# NUMBERS MUTATORS:
+# numbers/decrementer    - Decrements numeric literals by 1
+# numbers/incrementer    - Increments numeric literals by 1
+#
+# STATEMENT MUTATORS:
+# statement/remove       - Removes entire statements
+
+# To disable specific mutators, uncomment and add mutator names:
+# disabled_mutators:
+#   - "statement/remove"
+#   - "branch/case"
+
+# Execution timeout for each mutation test (in seconds)
+exec_timeout: 30
+
+# Enable debug output for troubleshooting
+debug: false
+
+# Enable verbose logging
+verbose: false

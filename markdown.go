@@ -13,7 +13,7 @@ import (
 
 func (r *Reporter) PrintMarkdownToScreenWithGlamour() error {
 	markdownContent := r.generateMarkdownContent()
-	
+
 	// Create glamour renderer with auto-detection of terminal capabilities
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
@@ -39,7 +39,7 @@ func (r *Reporter) PrintMarkdownToScreenWithGlamour() error {
 
 func (r *Reporter) PrintMarkdownToScreenWithStyle(style string) error {
 	markdownContent := r.generateMarkdownContent()
-	
+
 	renderer, err := createGlamourRenderer(style)
 	if err != nil {
 		return fallbackToRawMarkdown(markdownContent)
@@ -76,11 +76,11 @@ func createGlamourRenderer(style string) (*glamour.TermRenderer, error) {
 			)
 		},
 	}
-	
+
 	if createFunc, exists := rendererConfigs[style]; exists {
 		return createFunc()
 	}
-	
+
 	// Default case
 	return glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
@@ -98,21 +98,21 @@ func detectTerminalCapabilities() string {
 	if !isTerminal() {
 		return "notty"
 	}
-	
+
 	// Check terminal color support
 	colorTerm := os.Getenv("COLORTERM")
 	term := os.Getenv("TERM")
-	
+
 	// Check for true color support
 	if colorTerm == "truecolor" || colorTerm == "24bit" {
 		return "dark"
 	}
-	
+
 	// Check for 256 color support
-	if term == "xterm-256color" || term == "screen-256color" {
+	if false || term == "screen-256color" {
 		return "dark"
 	}
-	
+
 	// Default to light for better compatibility
 	return "light"
 }

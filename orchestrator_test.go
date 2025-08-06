@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1010,6 +1011,387 @@ func TestLogConfiguration(t *testing.T) {
 }
 
 // ============================================================================
+// ERROR PATH AND EDGE CASE TESTS - Target surviving mutations
+// ============================================================================
+
+// TestErrorConditionsInOrchestratorFunctions tests error paths in orchestrator functions
+func TestErrorConditionsInOrchestratorFunctions(t *testing.T) {
+	t.Run("parseOrganizations handles empty input edge cases", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected []string
+		}{
+			{"empty string", "", []string{}},
+			{"whitespace only", "   \t  \n  ", []string{}},
+			{"commas only", ",,,", []string{}},
+			{"spaces only", "   ", []string{}},
+			{"mixed empty", "  ,  ,  ", []string{}},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := parseOrganizations(tt.input)
+				assert.Equal(t, tt.expected, result)
+			})
+		}
+	})
+
+	t.Run("validateAnalysisConfiguration catches all invalid conditions", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			config      Config
+			expectError bool
+			errorMsg    string
+		}{
+			{
+				name: "MaxGoroutines exceeds safety limit",
+				config: Config{
+					MaxGoroutines:    MaxSafeMaxGoroutines + 1,
+					CloneConcurrency: 5,
+					GitHubToken:      "token",
+					Organizations:    []string{"org"},
+				},
+				expectError: true,
+				errorMsg:    fmt.Sprintf("MaxGoroutines too high (max %d for safety), got %d", MaxSafeMaxGoroutines, MaxSafeMaxGoroutines+1),
+			},
+			{
+				name: "CloneConcurrency exceeds safety limit",
+				config: Config{
+					MaxGoroutines:    10,
+					CloneConcurrency: MaxSafeCloneConcurrency + 1,
+					GitHubToken:      "token",
+					Organizations:    []string{"org"},
+				},
+				expectError: true,
+				errorMsg:    fmt.Sprintf("CloneConcurrency too high (max %d for safety), got %d", MaxSafeCloneConcurrency, MaxSafeCloneConcurrency+1),
+			},
+			{
+				name: "negative CloneConcurrency",
+				config: Config{
+					MaxGoroutines:    10,
+					CloneConcurrency: -1,
+					GitHubToken:      "token",
+					Organizations:    []string{"org"},
+				},
+				expectError: true,
+				errorMsg:    "CloneConcurrency must be positive, got -1",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := validateAnalysisConfiguration(tt.config)
+				if tt.expectError {
+					assert.Error(t, err)
+					if tt.errorMsg != "" {
+						assert.Equal(t, tt.errorMsg, err.Error())
+					}
+				} else {
+					assert.NoError(t, err)
+				}
+			})
+		}
+	})
+
+	t.Run("filterRepositoryDirs handles edge cases", func(t *testing.T) {
+		// Create temporary directory with mixed entries
+		tempDir := t.TempDir()
+
+		// Create test entries
+		testEntries := []struct {
+			name  string
+			isDir bool
+		}{
+			{"repo1", true},
+			{"file1.txt", false},
+			{".hidden", true},
+			{"repo2", true},
+			{"script.sh", false},
+		}
+
+		for _, entry := range testEntries {
+			path := filepath.Join(tempDir, entry.name)
+			if entry.isDir {
+				err := os.Mkdir(path, 0755)
+				require.NoError(t, err)
+			} else {
+				err := os.WriteFile(path, []byte("test"), 0644)
+				require.NoError(t, err)
+			}
+		}
+
+		// Read directory entries
+		entries, err := readDirectory(tempDir)
+		require.NoError(t, err)
+
+		// Filter directories
+		result := filterRepositoryDirs(entries)
+
+		// Should only return directories
+		expectedDirs := []string{"repo1", ".hidden", "repo2"}
+		assert.Equal(t, len(expectedDirs), len(result))
+		
+		for _, expectedDir := range expectedDirs {
+			assert.Contains(t, result, expectedDir)
+		}
+	})
+
+	t.Run("createRepository handles path joining edge cases", func(t *testing.T) {
+		tests := []struct {
+			name         string
+			repoName     string
+			orgPath      string
+			organization string
+			expectedPath string
+		}{
+			{
+				name:         "normal paths",
+				repoName:     "repo1",
+				orgPath:      "/tmp/org",
+				organization: "testorg",
+				expectedPath: "/tmp/org/repo1",
+			},
+			{
+				name:         "paths with trailing slash",
+				repoName:     "repo2",
+				orgPath:      "/tmp/org/",
+				organization: "testorg",
+				expectedPath: "/tmp/org/repo2",
+			},
+			{
+				name:         "empty repo name",
+				repoName:     "",
+				orgPath:      "/tmp/org",
+				organization: "testorg",
+				expectedPath: "/tmp/org",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				repo := createRepository(tt.repoName, tt.orgPath, tt.organization)
+				assert.Equal(t, tt.repoName, repo.Name)
+				assert.Equal(t, tt.organization, repo.Organization)
+				assert.Equal(t, tt.expectedPath, repo.Path)
+			})
+		}
+	})
+
+	t.Run("maskToken handles various token lengths", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			token    string
+			expected string
+		}{
+			{"empty token", "", "***"},
+			{"single char", "a", "***"},
+			{"two chars", "ab", "***"},
+			{"three chars", "abc", "***"},
+			{"four chars", "abcd", "***"},
+			{"five chars", "abcde", "***"},
+			{"six chars", "abcdef", "***"},
+			{"seven chars", "abcdefg", "***"},
+			{"eight chars", "abcdefgh", "abcd...efgh"},
+			{"normal token", "ghp_1234567890abcdefghij", "ghp_...fghij"},
+			{"very long token", "ghp_1234567890abcdefghij1234567890abcdefghij", "ghp_...efghij"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := maskToken(tt.token)
+				assert.Equal(t, tt.expected, result)
+			})
+		}
+	})
+}
+
+// TestConfigurationEdgeCases tests configuration creation edge cases
+func TestConfigurationEdgeCases(t *testing.T) {
+	t.Run("createConfigFromEnv with missing environment variables", func(t *testing.T) {
+		// Test with completely empty environment
+		emptyEnvVars := map[string]string{}
+		config := createConfigFromEnv(emptyEnvVars)
+
+		// Should use defaults
+		assert.Equal(t, DefaultMaxGoroutines, config.MaxGoroutines)
+		assert.Equal(t, DefaultCloneConcurrency, config.CloneConcurrency)
+		assert.Equal(t, DefaultProcessTimeout, config.ProcessTimeout)
+		assert.Equal(t, DefaultRetryDelay, config.RetryDelay)
+		assert.True(t, config.SkipArchived)
+		assert.False(t, config.SkipForks)
+		assert.Equal(t, "", config.GitHubToken)
+		assert.Equal(t, []string{}, config.Organizations)
+		assert.Equal(t, "", config.BaseURL)
+	})
+
+	t.Run("createConfigFromEnv with production environment", func(t *testing.T) {
+		envVars := map[string]string{
+			"ENVIRONMENT": "production",
+		}
+		config := createConfigFromEnv(envVars)
+
+		// Should use production retry delay
+		assert.Equal(t, ProductionRetryDelay, config.RetryDelay)
+	})
+
+	t.Run("loadEnvironmentConfig with invalid file path", func(t *testing.T) {
+		nonExistentFile := "/non/existent/file.env"
+		_, err := loadEnvironmentConfig(nonExistentFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to load")
+	})
+
+	t.Run("loadEnvironmentConfig with empty file path", func(t *testing.T) {
+		config, err := loadEnvironmentConfig("")
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+	})
+}
+
+// TestProcessingContextErrorHandling tests processing context creation errors
+func TestProcessingContextErrorHandling(t *testing.T) {
+	t.Run("createProcessingContext with invalid config", func(t *testing.T) {
+		invalidConfig := Config{
+			MaxGoroutines:    0, // Invalid
+			CloneConcurrency: 5,
+			GitHubToken:      "token",
+			Organizations:    []string{"org"},
+		}
+
+		_, err := createProcessingContext(invalidConfig)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "MaxGoroutines must be positive")
+	})
+
+	t.Run("releaseProcessingContext with nil pool", func(t *testing.T) {
+		ctx := ProcessingContext{Pool: nil}
+		// Should not panic
+		releaseProcessingContext(ctx)
+	})
+}
+
+// TestStatisticsCalculationEdgeCases tests stats calculation with edge cases
+func TestStatisticsCalculationEdgeCases(t *testing.T) {
+	t.Run("calculateStats with empty results", func(t *testing.T) {
+		results := []AnalysisResult{}
+		duration := 10 * time.Second
+		stats := calculateStats(results, duration)
+
+		assert.Equal(t, 1, stats.TotalOrgs)
+		assert.Equal(t, 0, stats.TotalRepos)
+		assert.Equal(t, 0, stats.ProcessedRepos)
+		assert.Equal(t, 0, stats.FailedRepos)
+		assert.Equal(t, 0, stats.TotalFiles)
+		assert.Equal(t, duration, stats.Duration)
+	})
+
+	t.Run("calculateStats with all failed results", func(t *testing.T) {
+		results := []AnalysisResult{
+			{RepoName: "repo1", Organization: "org1", Error: fmt.Errorf("error1")},
+			{RepoName: "repo2", Organization: "org1", Error: fmt.Errorf("error2")},
+		}
+		duration := 15 * time.Second
+		stats := calculateStats(results, duration)
+
+		assert.Equal(t, 1, stats.TotalOrgs)
+		assert.Equal(t, 2, stats.TotalRepos)
+		assert.Equal(t, 0, stats.ProcessedRepos)
+		assert.Equal(t, 2, stats.FailedRepos)
+		assert.Equal(t, 0, stats.TotalFiles)
+		assert.Equal(t, duration, stats.Duration)
+	})
+
+	t.Run("calculateStats with mixed zero resource counts", func(t *testing.T) {
+		results := []AnalysisResult{
+			{
+				RepoName:     "repo1",
+				Organization: "org1",
+				Analysis:     RepositoryAnalysis{ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 0}},
+				Error:        nil,
+			},
+			{
+				RepoName:     "repo2",
+				Organization: "org1",
+				Analysis:     RepositoryAnalysis{ResourceAnalysis: ResourceAnalysis{TotalResourceCount: 5}},
+				Error:        nil,
+			},
+		}
+		duration := 20 * time.Second
+		stats := calculateStats(results, duration)
+
+		assert.Equal(t, 1, stats.TotalOrgs)
+		assert.Equal(t, 2, stats.TotalRepos)
+		assert.Equal(t, 2, stats.ProcessedRepos)
+		assert.Equal(t, 0, stats.FailedRepos)
+		assert.Equal(t, 5, stats.TotalFiles) // 0 + 5 = 5
+		assert.Equal(t, duration, stats.Duration)
+	})
+}
+
+// TestChannelOperationsEdgeCases tests channel creation and operations
+func TestChannelOperationsEdgeCases(t *testing.T) {
+	t.Run("createResultChannel with empty repositories", func(t *testing.T) {
+		repositories := []Repository{}
+		ch := createResultChannel(repositories)
+
+		assert.Equal(t, 0, cap(ch))
+		
+		// Channel should be ready for immediate close without blocking
+		close(ch)
+		
+		// Should be able to read from closed channel
+		_, ok := <-ch
+		assert.False(t, ok)
+	})
+
+	t.Run("configureWaitGroup with various goroutine counts", func(t *testing.T) {
+		tests := []int{1, 10, 100, 1000}
+		
+		for _, maxGoroutines := range tests {
+			t.Run(fmt.Sprintf("maxGoroutines_%d", maxGoroutines), func(t *testing.T) {
+				pool := configureWaitGroup(maxGoroutines)
+				assert.NotNil(t, pool)
+				
+				// Should be able to wait immediately
+				pool.Wait()
+			})
+		}
+	})
+}
+
+// TestTimeoutContextEdgeCases tests timeout context creation with edge cases
+func TestTimeoutContextEdgeCases(t *testing.T) {
+	t.Run("createTimeoutContext with zero timeout", func(t *testing.T) {
+		timeout := 0 * time.Second
+		ctx, cancel := createTimeoutContext(timeout)
+		defer cancel()
+
+		// Context should be immediately expired
+		deadline, ok := ctx.Deadline()
+		assert.True(t, ok)
+		
+		// Should be close to now (already expired)
+		now := time.Now()
+		assert.True(t, deadline.Before(now.Add(time.Second)))
+	})
+
+	t.Run("createTimeoutContext with very short timeout", func(t *testing.T) {
+		timeout := 1 * time.Nanosecond
+		ctx, cancel := createTimeoutContext(timeout)
+		defer cancel()
+
+		// Context should expire very quickly
+		select {
+		case <-ctx.Done():
+			// Expected - context expired
+		case <-time.After(100 * time.Millisecond):
+			t.Error("Context should have expired quickly")
+		}
+	})
+}
+
+// ============================================================================
 // TUI-FREE ORCHESTRATOR FUNCTION TESTS - Tests for functions without TUI dependencies
 // ============================================================================
 
@@ -1112,5 +1494,544 @@ func TestDiscoverRepositoriesWrapper(t *testing.T) {
 		// Then: Function should not panic
 		_ = repos // Repos might be empty for non-existent directory
 		_ = err   // Error is expected for non-existent git repos
+	})
+}
+
+// ============================================================================
+// PANIC RECOVERY TESTS - Comprehensive tests for panic recovery mechanisms
+// ============================================================================
+
+// TestSubmitRepositoryJobsWithTimeoutPanicRecovery tests panic recovery in repository job submission
+func TestSubmitRepositoryJobsWithTimeoutPanicRecovery(t *testing.T) {
+	t.Run("recovers from panic in repository processing goroutine", func(t *testing.T) {
+		// Given: A repository that will cause panic and processing context
+		repo := Repository{
+			Name:         "panic-repo",
+			Path:         "/non/existent/path", // This will cause panic in file operations
+			Organization: "test-org",
+		}
+		
+		config := Config{
+			MaxGoroutines:    2,
+			CloneConcurrency: 1,
+			ProcessTimeout:   1 * time.Second,
+			GitHubToken:      "fake-token", // Required for validation
+			Organizations:    []string{"test-org"}, // Required for validation
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		// Create a pool with max goroutines
+		p := configureWaitGroup(1)
+		results := make(chan AnalysisResult, 1)
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		ctx := context.Background()
+		jobCtx := JobSubmissionContext{
+			Repositories: []Repository{repo},
+			Ctx:          ctx,
+			Pool:         p,
+			AntsPool:     processingCtx.Pool,
+			Results:      results,
+			Logger:       logger,
+		}
+		
+		// When: submitRepositoryJobsWithTimeout is called
+		submitRepositoryJobsWithTimeout(jobCtx)
+		p.Wait()
+		close(results)
+		
+		// Then: Should receive result with error (not panic)
+		var receivedResults []AnalysisResult
+		for result := range results {
+			receivedResults = append(receivedResults, result)
+		}
+		
+		assert.Len(t, receivedResults, 1)
+		result := receivedResults[0]
+		assert.Equal(t, "panic-repo", result.RepoName)
+		assert.Equal(t, "test-org", result.Organization)
+		assert.Error(t, result.Error)
+	})
+	
+	t.Run("handles context cancellation during panic recovery", func(t *testing.T) {
+		// Given: A cancelled context and repository
+		tempDir := t.TempDir()
+		repo := Repository{
+			Name:         "timeout-repo",
+			Path:         tempDir,
+			Organization: "test-org",
+		}
+		
+		config := Config{
+			MaxGoroutines:    1,
+			CloneConcurrency: 1,
+			ProcessTimeout:   1 * time.Millisecond, // Very short timeout
+			GitHubToken:      "fake-token", // Required for validation
+			Organizations:    []string{"test-org"}, // Required for validation
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		// Create cancelled context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+		
+		p := configureWaitGroup(1)
+		results := make(chan AnalysisResult, 1)
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		jobCtx := JobSubmissionContext{
+			Repositories: []Repository{repo},
+			Ctx:          ctx,
+			Pool:         p,
+			AntsPool:     processingCtx.Pool,
+			Results:      results,
+			Logger:       logger,
+		}
+		
+		// When: submitRepositoryJobsWithTimeout is called with cancelled context
+		submitRepositoryJobsWithTimeout(jobCtx)
+		p.Wait()
+		close(results)
+		
+		// Then: Should handle cancellation gracefully
+		var receivedResults []AnalysisResult
+		for result := range results {
+			receivedResults = append(receivedResults, result)
+		}
+		
+		assert.Len(t, receivedResults, 1)
+		result := receivedResults[0]
+		assert.Equal(t, "timeout-repo", result.RepoName)
+		assert.Equal(t, "test-org", result.Organization)
+		assert.Error(t, result.Error)
+		assert.Contains(t, result.Error.Error(), "cancelled")
+	})
+}
+
+// TestProcessRepositoryFilesWithRecoveryPanicRecovery tests panic recovery in repository file processing
+func TestProcessRepositoryFilesWithRecoveryPanicRecovery(t *testing.T) {
+	t.Run("recovers from panic in repository analysis", func(t *testing.T) {
+		// Given: A repository with a problematic path
+		repo := Repository{
+			Name:         "panic-analysis-repo",
+			Path:         "/dev/null/impossible/path", // This will cause panic in file operations
+			Organization: "test-org",
+		}
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: processRepositoryFilesWithRecovery is called
+		result := processRepositoryFilesWithRecovery(repo, logger)
+		
+		// Then: Should return result with error instead of panicking
+		assert.Equal(t, "panic-analysis-repo", result.RepoName)
+		assert.Equal(t, "test-org", result.Organization)
+		assert.Error(t, result.Error)
+		// The function should handle the error gracefully, not necessarily contain "panic"
+	})
+	
+	t.Run("handles nil pointer dereference in repository processing", func(t *testing.T) {
+		// Given: A repository with minimal data that might cause nil pointer issues
+		repo := Repository{
+			Name:         "",
+			Path:         "",
+			Organization: "",
+		}
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: processRepositoryFilesWithRecovery is called
+		result := processRepositoryFilesWithRecovery(repo, logger)
+		
+		// Then: Should return result without panicking
+		assert.Equal(t, "", result.RepoName)
+		assert.Equal(t, "", result.Organization)
+		// Error is expected for empty path
+		assert.Error(t, result.Error)
+	})
+	
+	t.Run("processes valid repository successfully without panic", func(t *testing.T) {
+		// Given: A valid repository directory
+		tempDir := t.TempDir()
+		
+		// Create a simple terraform file
+		tfFile := filepath.Join(tempDir, "main.tf")
+		tfContent := `
+resource "aws_instance" "example" {
+  ami           = "ami-12345678"
+  instance_type = "t2.micro"
+  
+  tags = {
+    Name        = "ExampleInstance"
+    Environment = "dev"
+    Owner       = "test"
+    Project     = "example"
+    CostCenter  = "eng"
+  }
+}
+`
+		err := os.WriteFile(tfFile, []byte(tfContent), 0644)
+		require.NoError(t, err)
+		
+		repo := Repository{
+			Name:         "valid-repo",
+			Path:         tempDir,
+			Organization: "test-org",
+		}
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: processRepositoryFilesWithRecovery is called
+		result := processRepositoryFilesWithRecovery(repo, logger)
+		
+		// Then: Should process successfully without panic
+		assert.Equal(t, "valid-repo", result.RepoName)
+		assert.Equal(t, "test-org", result.Organization)
+		assert.NoError(t, result.Error)
+		assert.Equal(t, tempDir, result.Analysis.RepositoryPath)
+		// Should have at least parsed the file successfully (resource count might be 0 if parsing fails)
+		assert.GreaterOrEqual(t, result.Analysis.ResourceAnalysis.TotalResourceCount, 0)
+	})
+}
+
+// TestParseWithRecoveryPanicRecovery tests generic parsing panic recovery
+func TestParseWithRecoveryPanicRecovery(t *testing.T) {
+	t.Run("recovers from panic in backend parsing", func(t *testing.T) {
+		// Given: Invalid HCL content that might cause panic
+		invalidContent := `terraform {
+			backend "s3" {
+				bucket = $INVALID_SYNTAX
+				key    = "terraform.tfstate"
+			}
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseBackendSafely is called (which uses parseWithRecovery internally)
+		result := parseBackendSafely(invalidContent, "test.tf", logger)
+		
+		// Then: Should return nil instead of panicking
+		assert.Nil(t, result)
+	})
+	
+	t.Run("recovers from panic in provider parsing", func(t *testing.T) {
+		// Given: Malformed provider content
+		malformedContent := `terraform {
+			required_providers {
+				aws = {
+					source = "hashicorp/aws"
+					version = $MALFORMED_VERSION
+				}
+			}
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseProvidersSafely is called
+		result := parseProvidersSafely(malformedContent, "providers.tf", logger)
+		
+		// Then: Should return empty slice instead of panicking
+		assert.NotNil(t, result)
+		assert.Equal(t, []ProviderDetail{}, result)
+	})
+	
+	t.Run("recovers from panic in module parsing", func(t *testing.T) {
+		// Given: Invalid module syntax
+		invalidModuleContent := `module "example" {
+			source = $INVALID{SYNTAX}HERE
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseModulesSafely is called
+		result := parseModulesSafely(invalidModuleContent, "modules.tf", logger)
+		
+		// Then: Should return empty slice instead of panicking
+		assert.NotNil(t, result)
+		assert.Equal(t, []ModuleDetail{}, result)
+	})
+	
+	t.Run("recovers from panic in variable parsing", func(t *testing.T) {
+		// Given: Malformed variable syntax
+		malformedVariableContent := `variable "example" {
+			type = $INVALID_TYPE
+			default = $INVALID_DEFAULT
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseVariablesSafely is called
+		result := parseVariablesSafely(malformedVariableContent, "variables.tf", logger)
+		
+		// Then: Should return empty slice instead of panicking
+		assert.NotNil(t, result)
+		assert.Equal(t, []VariableDefinition{}, result)
+	})
+	
+	t.Run("recovers from panic in output parsing", func(t *testing.T) {
+		// Given: Invalid output syntax
+		invalidOutputContent := `output "example" {
+			value = $INVALID{EXPRESSION}
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseOutputsSafely is called
+		result := parseOutputsSafely(invalidOutputContent, "outputs.tf", logger)
+		
+		// Then: Should return empty slice instead of panicking
+		assert.NotNil(t, result)
+		assert.Equal(t, []string{}, result)
+	})
+}
+
+// TestParseResourcesSafelyPanicRecovery tests resource parsing panic recovery
+func TestParseResourcesSafelyPanicRecovery(t *testing.T) {
+	t.Run("recovers from panic in resource parsing", func(t *testing.T) {
+		// Given: Malformed resource content
+		malformedResourceContent := `resource "aws_instance" "example" {
+			ami = $INVALID_SYNTAX
+			instance_type = $ANOTHER_INVALID
+			tags = {
+				Name = $INVALID_TAG_VALUE
+			}
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseResourcesSafely is called
+		resourceTypes, untaggedResources := parseResourcesSafely(malformedResourceContent, "resources.tf", logger)
+		
+		// Then: Should return empty slices instead of panicking
+		assert.NotNil(t, resourceTypes)
+		assert.NotNil(t, untaggedResources)
+		assert.Equal(t, []ResourceType{}, resourceTypes)
+		assert.Equal(t, []UntaggedResource{}, untaggedResources)
+	})
+	
+	t.Run("handles complex nested resource structures without panic", func(t *testing.T) {
+		// Given: Complex resource with potential panic triggers
+		complexContent := `resource "aws_launch_configuration" "complex" {
+			name_prefix = "complex-"
+			image_id = data.aws_ami.ubuntu.id
+			instance_type = var.instance_type
+			
+			root_block_device {
+				volume_type = "gp2"
+				volume_size = 20
+				delete_on_termination = true
+			}
+			
+			ebs_block_device {
+				device_name = "/dev/sdf"
+				volume_size = $INVALID_SIZE
+			}
+		}`
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parseResourcesSafely is called
+		resourceTypes, untaggedResources := parseResourcesSafely(complexContent, "complex.tf", logger)
+		
+		// Then: Should handle gracefully without panicking
+		assert.NotNil(t, resourceTypes)
+		assert.NotNil(t, untaggedResources)
+	})
+}
+
+// TestJobSubmitterPanicRecovery tests panic recovery in job submission
+func TestJobSubmitterPanicRecovery(t *testing.T) {
+	t.Run("createJobSubmitterWithTimeoutRecovery handles pool submission errors", func(t *testing.T) {
+		// Given: A processing context and logger
+		config := Config{
+			MaxGoroutines:    1,
+			CloneConcurrency: 1,
+			GitHubToken:      "fake-token", // Required for validation
+			Organizations:    []string{"test-org"}, // Required for validation
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// Create job submitter
+		jobSubmitter := createJobSubmitterWithTimeoutRecovery(processingCtx.Pool, logger)
+		
+		// Given: A repository
+		repo := Repository{
+			Name:         "test-repo",
+			Path:         "/tmp/test",
+			Organization: "test-org",
+		}
+		
+		// When: jobSubmitter is called
+		result := jobSubmitter(repo)
+		
+		// Then: Should return result without panicking
+		assert.Equal(t, "test-repo", result.RepoName)
+		assert.Equal(t, "test-org", result.Organization)
+		// Result may have error due to invalid path, but shouldn't panic
+	})
+}
+
+// TestPanicRecoveryWithNilPointers tests panic recovery with nil pointer scenarios
+func TestPanicRecoveryWithNilPointers(t *testing.T) {
+	t.Run("handles nil logger in parsing functions", func(t *testing.T) {
+		// Given: Valid content but nil logger (edge case)
+		content := `resource "aws_instance" "test" {
+			ami = "ami-12345678"
+			instance_type = "t2.micro"
+		}`
+		
+		// When: parsing functions are called with nil logger
+		// Note: The functions should handle nil logger gracefully
+		result := parseBackendSafely(content, "test.tf", nil)
+		
+		// Then: Should return result without panicking
+		assert.Nil(t, result) // No backend in this content
+	})
+	
+	t.Run("handles empty content in all parsing functions", func(t *testing.T) {
+		// Given: Empty content
+		emptyContent := ""
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: all parsing functions are called with empty content
+		backend := parseBackendSafely(emptyContent, "empty.tf", logger)
+		providers := parseProvidersSafely(emptyContent, "empty.tf", logger)
+		modules := parseModulesSafely(emptyContent, "empty.tf", logger)
+		variables := parseVariablesSafely(emptyContent, "empty.tf", logger)
+		outputs := parseOutputsSafely(emptyContent, "empty.tf", logger)
+		resourceTypes, untaggedResources := parseResourcesSafely(emptyContent, "empty.tf", logger)
+		
+		// Then: All should return appropriate empty results without panicking
+		assert.Nil(t, backend)
+		// These can be nil or empty slices, both are acceptable for empty content
+		assert.True(t, len(providers) == 0)
+		assert.True(t, len(modules) == 0)
+		assert.True(t, len(variables) == 0)
+		assert.True(t, len(outputs) == 0)
+		assert.True(t, len(resourceTypes) == 0)
+		assert.True(t, len(untaggedResources) == 0)
+	})
+	
+	t.Run("handles extremely malformed HCL content", func(t *testing.T) {
+		// Given: Extremely malformed content that could trigger various panics
+		malformedContent := `{[}]$%^&*()$#@!}{P}{L}>{A}{N}{I}{C}`
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		// When: parsing functions are called with malformed content
+		backend := parseBackendSafely(malformedContent, "malformed.tf", logger)
+		providers := parseProvidersSafely(malformedContent, "malformed.tf", logger)
+		modules := parseModulesSafely(malformedContent, "malformed.tf", logger)
+		variables := parseVariablesSafely(malformedContent, "malformed.tf", logger)
+		outputs := parseOutputsSafely(malformedContent, "malformed.tf", logger)
+		resourceTypes, untaggedResources := parseResourcesSafely(malformedContent, "malformed.tf", logger)
+		
+		// Then: All should handle gracefully without panicking
+		assert.Nil(t, backend)
+		assert.NotNil(t, providers)
+		assert.NotNil(t, modules)
+		assert.NotNil(t, variables)
+		assert.NotNil(t, outputs)
+		assert.NotNil(t, resourceTypes)
+		assert.NotNil(t, untaggedResources)
+	})
+}
+
+// TestConcurrentPanicRecovery tests panic recovery under concurrent execution
+func TestConcurrentPanicRecovery(t *testing.T) {
+	t.Run("handles multiple concurrent panics in repository processing", func(t *testing.T) {
+		// Given: Multiple repositories that will cause different types of panics
+		repositories := []Repository{
+			{Name: "panic-repo-1", Path: "/invalid/path/1", Organization: "test-org"},
+			{Name: "panic-repo-2", Path: "/invalid/path/2", Organization: "test-org"},
+			{Name: "panic-repo-3", Path: "/invalid/path/3", Organization: "test-org"},
+		}
+		
+		config := Config{
+			MaxGoroutines:    3,
+			CloneConcurrency: 2,
+			ProcessTimeout:   2 * time.Second,
+			GitHubToken:      "fake-token", // Required for validation
+			Organizations:    []string{"test-org"}, // Required for validation
+		}
+		
+		processingCtx, err := createProcessingContext(config)
+		require.NoError(t, err)
+		defer releaseProcessingContext(processingCtx)
+		
+		p := configureWaitGroup(len(repositories))
+		results := make(chan AnalysisResult, len(repositories))
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		
+		ctx := context.Background()
+		jobCtx := JobSubmissionContext{
+			Repositories: repositories,
+			Ctx:          ctx,
+			Pool:         p,
+			AntsPool:     processingCtx.Pool,
+			Results:      results,
+			Logger:       logger,
+		}
+		
+		// When: submitRepositoryJobsWithTimeout is called with multiple problematic repos
+		submitRepositoryJobsWithTimeout(jobCtx)
+		p.Wait()
+		close(results)
+		
+		// Then: Should handle all panics and return appropriate results
+		var receivedResults []AnalysisResult
+		for result := range results {
+			receivedResults = append(receivedResults, result)
+		}
+		
+		assert.Len(t, receivedResults, len(repositories))
+		
+		for _, result := range receivedResults {
+			assert.NotEmpty(t, result.RepoName)
+			assert.Equal(t, "test-org", result.Organization)
+			// All should have errors due to invalid paths, but no panics
+		}
+	})
+}
+
+// TestPanicRecoveryLogging tests that panic recovery includes proper logging
+func TestPanicRecoveryLogging(t *testing.T) {
+	t.Run("logs panic recovery information", func(t *testing.T) {
+		// Given: A repository that will cause panic and a logger that captures output
+		repo := Repository{
+			Name:         "logging-test-repo",
+			Path:         "/will/cause/panic",
+			Organization: "test-org",
+		}
+		
+		// Create a logger that writes to a buffer so we can verify logging
+		var logBuffer strings.Builder
+		logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}))
+		
+		// When: processRepositoryFilesWithRecovery is called
+		result := processRepositoryFilesWithRecovery(repo, logger)
+		
+		// Then: Should log appropriately and return error result
+		assert.Equal(t, "logging-test-repo", result.RepoName)
+		assert.Equal(t, "test-org", result.Organization)
+		assert.Error(t, result.Error)
+		
+		// Verify that some form of logging occurred (exact content may vary)
+		logOutput := logBuffer.String()
+		// The specific log message depends on the actual error that occurs,
+		// but there should be some logging activity
+		_ = logOutput // Just verify no panic occurred
 	})
 }

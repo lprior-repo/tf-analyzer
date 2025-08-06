@@ -76,7 +76,7 @@ terraform-analysis-report.md
 # Mutation testing outputs (exclude generated mutation reports but keep config)
 mutants/
 mutation-report.*
-mutants/
+report.json
 
 coverage.html
 coverage.out

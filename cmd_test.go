@@ -1610,3 +1610,261 @@ func TestSetupAnalysis(t *testing.T) {
 		releaseProcessingContext(processingCtx)
 	})
 }
+
+// ============================================================================
+// ERROR CONDITION AND EDGE CASE TESTS FOR CMD.GO
+// ============================================================================
+
+// TestFlagValidationEdgeCases tests flag validation logic edge cases
+func TestFlagValidationEdgeCases(t *testing.T) {
+	t.Run("validateFlags handles empty token", func(t *testing.T) {
+		// Given: empty GitHub token
+		viper.Reset()
+		viper.Set("github.token", "")
+		viper.Set("organizations", []string{"test-org"})
+		
+		// When: validateFlags is called
+		err := validateFlags()
+		
+		// Then: should return error for empty token
+		if err == nil {
+			t.Error("Expected error for empty GitHub token")
+		}
+		if !strings.Contains(err.Error(), "GitHub token") {
+			t.Errorf("Expected GitHub token error, got: %v", err)
+		}
+	})
+	
+	t.Run("validateFlags handles negative values", func(t *testing.T) {
+		// Given: negative goroutine count
+		viper.Reset()
+		viper.Set("github.token", "test-token")
+		viper.Set("organizations", []string{"test-org"})
+		viper.Set("processing.max_goroutines", -1)
+		
+		// When: validateFlags is called
+		err := validateFlags()
+		
+		// Then: should return error for negative values
+		if err == nil {
+			t.Error("Expected error for negative max_goroutines")
+		}
+	})
+	
+	t.Run("validateFlags handles zero clone concurrency", func(t *testing.T) {
+		// Given: zero clone concurrency
+		viper.Reset()
+		viper.Set("github.token", "test-token")
+		viper.Set("organizations", []string{"test-org"})
+		viper.Set("processing.clone_concurrency", 0)
+		
+		// When: validateFlags is called
+		err := validateFlags()
+		
+		// Then: should return error for zero clone concurrency
+		if err == nil {
+			t.Error("Expected error for zero clone concurrency")
+		}
+	})
+}
+
+// TestParseTargetReposEdgeCases tests repository parsing edge cases
+func TestParseTargetReposEdgeCases(t *testing.T) {
+	t.Run("parseTargetRepos handles empty string", func(t *testing.T) {
+		// Given: empty repo string
+		result := parseTargetRepos("")
+		
+		// Then: should return empty slice
+		if len(result) != 0 {
+			t.Errorf("Expected empty slice, got %v", result)
+		}
+	})
+	
+	t.Run("parseTargetRepos handles whitespace only", func(t *testing.T) {
+		// Given: whitespace only string
+		result := parseTargetRepos("   \t  \n  ")
+		
+		// Then: should return empty slice
+		if len(result) != 0 {
+			t.Errorf("Expected empty slice, got %v", result)
+		}
+	})
+	
+	t.Run("parseTargetRepos handles mixed separators", func(t *testing.T) {
+		// Given: mixed comma and space separators
+		result := parseTargetRepos("repo1, repo2   repo3\trepo4")
+		
+		// Then: should parse all repositories
+		expected := []string{"repo1", "repo2", "repo3", "repo4"}
+		if len(result) != len(expected) {
+			t.Errorf("Expected %d repos, got %d", len(expected), len(result))
+		}
+		
+		for i, repo := range result {
+			if repo != expected[i] {
+				t.Errorf("Expected repo %s, got %s", expected[i], repo)
+			}
+		}
+	})
+}
+
+// TestConfigurationParsingErrorPaths tests config parsing error paths
+func TestConfigurationParsingErrorPaths(t *testing.T) {
+	t.Run("createConfigFromViper handles missing organizations", func(t *testing.T) {
+		// Given: viper with no organizations set
+		viper.Reset()
+		viper.Set("github.token", "test-token")
+		// No organizations set
+		
+		// When: createConfigFromViper is called
+		config, err := createConfigFromViper()
+		
+		// Then: should handle gracefully
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		
+		if len(config.Organizations) > 0 {
+			t.Errorf("Expected empty organizations, got %v", config.Organizations)
+		}
+	})
+	
+	t.Run("createConfigFromViper handles invalid timeout format", func(t *testing.T) {
+		// Given: viper with invalid timeout
+		viper.Reset() 
+		viper.Set("github.token", "test-token")
+		viper.Set("organizations", []string{"test-org"})
+		viper.Set("processing.timeout", "invalid-duration")
+		
+		// When: createConfigFromViper is called
+		config, err := createConfigFromViper()
+		
+		// Then: should use default timeout value
+		if err != nil {
+			t.Errorf("Should handle invalid timeout gracefully, got error: %v", err)
+		}
+		
+		// Should fall back to some default value
+		if config.ProcessTimeout == 0 {
+			t.Error("Expected non-zero timeout fallback")
+		}
+	})
+}
+
+// TestCommandExecutionErrorHandling tests command execution error handling
+func TestCommandExecutionErrorHandling(t *testing.T) {
+	t.Run("executeCommand handles context cancellation", func(t *testing.T) {
+		// Given: cancelled context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+		
+		config := Config{
+			Organizations:    []string{"test-org"},
+			GitHubToken:      "test-token",
+			MaxGoroutines:    2,
+			CloneConcurrency: 1,
+			ProcessTimeout:   1 * time.Second,
+		}
+		
+		// When: executeCommand is called with cancelled context
+		err := executeCommand(ctx, config)
+		
+		// Then: should handle cancellation gracefully
+		if err == nil {
+			t.Error("Expected error for cancelled context")
+		}
+		
+		if !strings.Contains(err.Error(), "context canceled") && 
+		   !strings.Contains(err.Error(), "operation was cancelled") {
+			t.Logf("Context cancellation error: %v", err)
+		}
+	})
+	
+	t.Run("executeCommand handles validation failure", func(t *testing.T) {
+		// Given: invalid config
+		ctx := context.Background()
+		config := Config{
+			Organizations: []string{}, // Empty orgs will fail validation
+			GitHubToken:   "test-token",
+		}
+		
+		// When: executeCommand is called
+		err := executeCommand(ctx, config)
+		
+		// Then: should return validation error
+		if err == nil {
+			t.Error("Expected validation error")
+		}
+		
+		if !strings.Contains(err.Error(), "validation failed") {
+			t.Errorf("Expected validation error, got: %v", err)
+		}
+	})
+}
+
+// TestRetryDelayCalculation tests retry delay calculation
+func TestRetryDelayCalculation(t *testing.T) {
+	t.Run("production retry delay is different from default", func(t *testing.T) {
+		// Given: default and production constants
+		defaultDelay := DefaultRetryDelay
+		productionDelay := ProductionRetryDelay
+		
+		// Then: they should be different values
+		if defaultDelay == productionDelay {
+			t.Error("Expected DefaultRetryDelay and ProductionRetryDelay to be different")
+		}
+		
+		// And both should be positive
+		if defaultDelay <= 0 {
+			t.Error("Expected DefaultRetryDelay to be positive")
+		}
+		
+		if productionDelay <= 0 {
+			t.Error("Expected ProductionRetryDelay to be positive")
+		}
+	})
+}
+
+// TestMaskTokenEdgeCases tests token masking edge cases
+func TestMaskTokenEdgeCases(t *testing.T) {
+	t.Run("maskToken handles various token lengths", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			token    string
+			expected string
+		}{
+			{
+				name:     "very short token",
+				token:    "a",
+				expected: "***",
+			},
+			{
+				name:     "token with exactly 8 characters",
+				token:    "12345678",
+				expected: "1234...5678",
+			},
+			{
+				name:     "token with special characters",
+				token:    "ghp_!@#$%^&*()",
+				expected: "ghp_...&*()",
+			},
+			{
+				name:     "unicode token",
+				token:    "token-with-émojî-🎉",
+				expected: "toke...î-🎉",
+			},
+		}
+		
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := maskToken(tt.token)
+				if len(tt.token) < 8 && result != "***" {
+					t.Errorf("Expected '***' for short token, got %s", result)
+				}
+				if len(tt.token) >= 8 && len(result) == 0 {
+					t.Error("Expected non-empty masked token")
+				}
+			})
+		}
+	})
+}

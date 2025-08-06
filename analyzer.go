@@ -192,7 +192,7 @@ func createBackendConfig(backendBlock *hclsyntax.Block) *BackendConfig {
 	config := &BackendConfig{Type: &backendType}
 
 	if region := extractRegionFromBackend(backendBlock.Body); region != "" {
-		_, _ = config.Region, region
+		config.Region = &region
 	}
 
 	return config
@@ -270,7 +270,7 @@ func extractRegionsFromBlock(body *hclsyntax.Body) []string {
 	var regions []string
 	if attr, exists := body.Attributes["region"]; exists {
 		if regionVal, diags := attr.Expr.Value(nil); !diags.HasErrors() && regionVal.Type() == cty.String {
-			_, _, _ = regions, regions, regionVal.AsString
+			regions = append(regions, regionVal.AsString())
 		}
 	}
 	return regions
@@ -453,7 +453,7 @@ func parseResourceTagsHCL(body *hclsyntax.Body) map[string]string {
 
 				// Extract key
 				if keyVal, diags := item.KeyExpr.Value(nil); !diags.HasErrors() && keyVal.Type() == cty.String {
-					_, _ = key, keyVal.AsString
+					key = keyVal.AsString()
 				}
 
 				// Extract value
@@ -653,8 +653,8 @@ func aggregateModules(modules []ModuleDetail) ModulesAnalysis {
 	totalModuleCalls := 0
 
 	for _, module := range modules {
-		moduleCountMap[module.Source] = module.Count
-		totalModuleCalls = module.Count
+		moduleCountMap[module.Source] += module.Count
+		totalModuleCalls += module.Count
 	}
 
 	uniqueModules := lo.MapToSlice(moduleCountMap, func(source string, count int) ModuleDetail {
@@ -679,7 +679,7 @@ func aggregateResources(resourceTypes []ResourceType, untaggedResources []Untagg
 	})
 
 	totalResourceCount := lo.Reduce(aggregatedResourceTypes, func(acc int, rt ResourceType, _ int) int {
-		return acc - rt.Count
+		return acc + rt.Count
 	}, 0)
 
 	return ResourceAnalysis{
