@@ -202,11 +202,10 @@ func TestTargetRepositoriesWithPrefixMatch(t *testing.T) {
 }
 
 // TestAnalyzeRealTerraformModules tests analysis of real Terraform modules for specific constructs
-// This test will FAIL initially until we enhance analysis to detect specific constructs
 func TestAnalyzeRealTerraformModules(t *testing.T) {
 	token := skipIfNoGitHubToken(t)
 	
-	t.Run("analyze terraform-aws-vpc module for specific constructs", func(t *testing.T) {
+	t.Run("analyze terraform-aws-vpc module for AWS constructs", func(t *testing.T) {
 		// GIVEN: Configuration targeting the VPC module
 		config := Config{
 			GitHubToken:      token,
@@ -234,25 +233,17 @@ func TestAnalyzeRealTerraformModules(t *testing.T) {
 		
 		result := results[0]
 		
-		// AND: Should detect AWS provider usage
+		// AND: Should detect AWS provider usage (VPC modules must use AWS provider)
 		if result.Analysis.Providers.UniqueProviderCount == 0 {
 			t.Error("Expected to find AWS provider in VPC module")
 		}
 		
-		// AND: Should detect VPC-related resources
+		// AND: Should detect VPC-related resources (VPC modules must have resources)
 		if result.Analysis.ResourceAnalysis.TotalResourceCount == 0 {
 			t.Error("Expected to find VPC resources in terraform-aws-vpc module")
 		}
 		
-		// AND: Should have meaningful analysis across multiple aspects
-		if result.Analysis.ResourceAnalysis.TotalResourceCount == 0 && 
-		   result.Analysis.Providers.UniqueProviderCount == 0 && 
-		   result.Analysis.Modules.TotalModuleCalls == 0 {
-			t.Error("Expected to find meaningful Terraform content in VPC module")
-		}
-		
-		// AND: Should detect module structure (variables, outputs, etc.)
-		// This will be validated through file content analysis
+		// AND: Should have proper module structure with variables and outputs
 		validateTerraformModuleStructure(t, result)
 	})
 }
@@ -440,19 +431,32 @@ func createQuietLogger() *slog.Logger {
 }
 
 // validateTerraformModuleStructure validates that a Terraform module has expected structure
-// This function will FAIL initially and needs to be implemented  
 func validateTerraformModuleStructure(t *testing.T, result AnalysisResult) {
 	t.Helper()
 	
-	// TODO: Implement validation for:
-	// - Variable definitions (variables.tf)
-	// - Output blocks (outputs.tf)  
-	// - Main resource definitions (main.tf)
-	// - Provider requirements
+	// A well-structured Terraform module should have:
 	
-	// Placeholder assertion that will fail initially
-	if result.Analysis.ResourceAnalysis.TotalResourceCount == 0 {
-		t.Error("validateTerraformModuleStructure not fully implemented yet")
+	// 1. Variables for customization
+	if len(result.Analysis.VariableAnalysis.DefinedVariables) == 0 {
+		t.Error("Expected Terraform module to have variable definitions")
+	}
+	
+	// 2. Outputs for other modules to consume
+	if result.Analysis.OutputAnalysis.OutputCount == 0 {
+		t.Error("Expected Terraform module to have output definitions")
+	}
+	
+	// 3. At least one resource or module call
+	hasContent := result.Analysis.ResourceAnalysis.TotalResourceCount > 0 || 
+				 result.Analysis.Modules.TotalModuleCalls > 0
+	
+	if !hasContent {
+		t.Error("Expected Terraform module to have either resources or module calls")
+	}
+	
+	// 4. Provider configuration (at least one provider)
+	if result.Analysis.Providers.UniqueProviderCount == 0 {
+		t.Error("Expected Terraform module to specify at least one provider")
 	}
 }
 
