@@ -55,6 +55,10 @@ func (r *Reporter) AddResults(results []AnalysisResult) {
 	r.results = append(r.results, results...)
 }
 
+func (r *Reporter) GetResults() []AnalysisResult {
+	return r.results
+}
+
 func (r *Reporter) generateGlobalSummary() GlobalSummary {
 	successfulResults := r.getSuccessfulResults()
 	backendSummary := r.aggregateBackends(successfulResults)
