@@ -31,6 +31,13 @@ var (
 	verbose         bool
 	markdownStyle   string
 	rawMarkdown     bool
+	// Repository targeting flags
+	targetRepos     []string
+	targetReposFile string
+	matchRegex      string
+	matchPrefix     []string
+	excludeRegex    string
+	excludePrefix   []string
 )
 
 // loadRequiredEnvFile loads a .env file and returns an error if it doesn't exist
@@ -197,6 +204,14 @@ func initializeAnalyzeFlags() {
 	analyzeCmd.Flags().StringVar(&markdownStyle, "markdown-style", "auto", "markdown rendering style: auto, dark, light, notty")
 	analyzeCmd.Flags().BoolVar(&rawMarkdown, "raw-markdown", false, "print raw markdown without glamour rendering")
 	
+	// Repository targeting flags for ghorg integration
+	analyzeCmd.Flags().StringSliceVar(&targetRepos, "target-repos", []string{}, "comma-separated list of specific repositories to clone")
+	analyzeCmd.Flags().StringVar(&targetReposFile, "target-repos-file", "", "path to file containing repository names (one per line)")
+	analyzeCmd.Flags().StringVar(&matchRegex, "match-regex", "", "regex pattern to match repository names")
+	analyzeCmd.Flags().StringSliceVar(&matchPrefix, "match-prefix", []string{}, "comma-separated prefixes to match repository names")
+	analyzeCmd.Flags().StringVar(&excludeRegex, "exclude-regex", "", "regex pattern to exclude repository names")
+	analyzeCmd.Flags().StringSliceVar(&excludePrefix, "exclude-prefix", []string{}, "comma-separated prefixes to exclude repository names")
+	
 	// Mark required flags
 	if err := analyzeCmd.MarkFlagRequired("orgs"); err != nil {
 		panic(fmt.Sprintf("Failed to mark orgs flag as required: %v", err))
@@ -215,6 +230,13 @@ func bindViperFlags() {
 		"output-dir":       "output.directory",
 		"markdown-style":   "ui.markdown_style",
 		"raw-markdown":     "ui.raw_markdown",
+		// Repository targeting flags
+		"target-repos":     "github.target_repos",
+		"target-repos-file": "github.target_repos_file",
+		"match-regex":      "github.match_regex",
+		"match-prefix":     "github.match_prefix",
+		"exclude-regex":    "github.exclude_regex",
+		"exclude-prefix":   "github.exclude_prefix",
 	}
 	
 	for flag, viperKey := range flagBindings {
@@ -401,6 +423,27 @@ func printMarkdownReport(reporter *Reporter, logger *slog.Logger) error {
 	return nil
 }
 
+// getStringSliceFromViper gets a string slice from viper, handling both slice and string formats
+func getStringSliceFromViper(key string) []string {
+	// First try to get as slice
+	slice := viper.GetStringSlice(key)
+	if len(slice) > 0 {
+		// If we got a single item slice that contains commas, parse it
+		if len(slice) == 1 && strings.Contains(slice[0], ",") {
+			return parseTargetRepos(slice[0])
+		}
+		return slice
+	}
+	
+	// If empty, try to get as string and parse it
+	str := viper.GetString(key)
+	if str != "" {
+		return parseTargetRepos(str) // Reuse the parsing logic
+	}
+	
+	return []string{}
+}
+
 func createConfigFromViper() (Config, error) {
 	// Get organizations from viper
 	orgs := viper.GetStringSlice("organizations")
@@ -418,6 +461,11 @@ func createConfigFromViper() (Config, error) {
 		retryDelay = ProductionRetryDelay
 	}
 
+	// Parse targeting options from viper
+	targetRepos := getStringSliceFromViper("github.target_repos")
+	matchPrefix := getStringSliceFromViper("github.match_prefix")
+	excludePrefix := getStringSliceFromViper("github.exclude_prefix")
+
 	return Config{
 		Organizations:    orgs,
 		GitHubToken:      viper.GetString("github.token"),
@@ -428,6 +476,13 @@ func createConfigFromViper() (Config, error) {
 		SkipArchived:     viper.GetBool("github.skip_archived"),
 		SkipForks:        viper.GetBool("github.skip_forks"),
 		BaseURL:          viper.GetString("github.base_url"),
+		// Repository targeting options
+		TargetRepos:     targetRepos,
+		TargetReposFile: viper.GetString("github.target_repos_file"),
+		MatchRegex:      viper.GetString("github.match_regex"),
+		MatchPrefix:     matchPrefix,
+		ExcludeRegex:    viper.GetString("github.exclude_regex"),
+		ExcludePrefix:   excludePrefix,
 	}, nil
 }
 
@@ -438,6 +493,12 @@ func validateCLIAnalysisConfig(config Config) error {
 	if config.GitHubToken == "" {
 		return fmt.Errorf("GitHub token is required (set GITHUB_TOKEN or use --token)")
 	}
+	
+	// Validate targeting configuration
+	if err := validateTargetingConfiguration(config); err != nil {
+		return err
+	}
+	
 	return validateAnalysisConfiguration(config)
 }
 
@@ -531,6 +592,27 @@ func showConfig(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Max Goroutines: %d\n", config.MaxGoroutines)
 	fmt.Printf("Clone Concurrency: %d\n", config.CloneConcurrency)
 	fmt.Printf("Timeout: %v\n", config.ProcessTimeout)
+	
+	// Repository targeting options
+	if len(config.TargetRepos) > 0 {
+		fmt.Printf("Target Repos: %s\n", strings.Join(config.TargetRepos, ", "))
+	}
+	if config.TargetReposFile != "" {
+		fmt.Printf("Target Repos File: %s\n", config.TargetReposFile)
+	}
+	if config.MatchRegex != "" {
+		fmt.Printf("Match Regex: %s\n", config.MatchRegex)
+	}
+	if len(config.MatchPrefix) > 0 {
+		fmt.Printf("Match Prefix: %s\n", strings.Join(config.MatchPrefix, ", "))
+	}
+	if config.ExcludeRegex != "" {
+		fmt.Printf("Exclude Regex: %s\n", config.ExcludeRegex)
+	}
+	if len(config.ExcludePrefix) > 0 {
+		fmt.Printf("Exclude Prefix: %s\n", strings.Join(config.ExcludePrefix, ", "))
+	}
+	
 	fmt.Printf("Output Format: %s\n", viper.GetString("output.format"))
 	fmt.Printf("Output Directory: %s\n", viper.GetString("output.directory"))
 	fmt.Printf("Markdown Style: %s\n", viper.GetString("ui.markdown_style"))
@@ -549,6 +631,20 @@ github:
   base_url: ""              # For GitHub Enterprise (optional)
   skip_archived: true       # Skip archived repositories
   skip_forks: false        # Skip forked repositories
+  
+  # Repository targeting options (use only one approach)
+  # target_repos:           # Specific repositories to clone
+  #   - "terraform-aws-vpc"
+  #   - "terraform-aws-s3"
+  # target_repos_file: ""   # Path to file with repository names (one per line)
+  # match_regex: ""         # Regex pattern to match repository names (e.g., "^terraform-.*")
+  # match_prefix:           # Prefixes to match repository names
+  #   - "terraform-"
+  #   - "aws-"
+  # exclude_regex: ""       # Regex pattern to exclude repository names (e.g., ".*-deprecated$")
+  # exclude_prefix:         # Prefixes to exclude repository names
+  #   - "test-"
+  #   - "demo-"
 
 # Organizations to analyze
 organizations:

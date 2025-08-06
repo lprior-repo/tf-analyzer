@@ -46,6 +46,26 @@ func buildGhorgCommand(ctx context.Context, op CloneOperation) *exec.Cmd {
 		args = append(args, "--base-url", op.Config.BaseURL)
 	}
 
+	// Add repository targeting options
+	if len(op.Config.TargetRepos) > 0 {
+		args = append(args, "--target-repos", strings.Join(op.Config.TargetRepos, ","))
+	}
+	if op.Config.TargetReposFile != "" {
+		args = append(args, "--target-repos-file", op.Config.TargetReposFile)
+	}
+	if op.Config.MatchRegex != "" {
+		args = append(args, "--match-regex", op.Config.MatchRegex)
+	}
+	if len(op.Config.MatchPrefix) > 0 {
+		args = append(args, "--match-prefix", strings.Join(op.Config.MatchPrefix, ","))
+	}
+	if op.Config.ExcludeRegex != "" {
+		args = append(args, "--exclude-regex", op.Config.ExcludeRegex)
+	}
+	if len(op.Config.ExcludePrefix) > 0 {
+		args = append(args, "--exclude-prefix", strings.Join(op.Config.ExcludePrefix, ","))
+	}
+
 	args = append(args, "--concurrency", fmt.Sprintf("%d", op.Config.CloneConcurrency))
 	args = append(args, "--git-filter", "blob:none")
 

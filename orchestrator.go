@@ -40,6 +40,13 @@ type Config struct {
 	GitHubToken      string
 	Organizations    []string
 	BaseURL          string
+	// Repository targeting options for ghorg
+	TargetRepos     []string // --target-repos: Comma-separated list of specific repositories
+	TargetReposFile string   // --target-repos-file: Path to file containing repository names
+	MatchRegex      string   // --match-regex: Regex pattern to match repository names
+	MatchPrefix     []string // --match-prefix: Comma-separated prefixes to match
+	ExcludeRegex    string   // --exclude-regex: Regex pattern to exclude repository names
+	ExcludePrefix   []string // --exclude-prefix: Comma-separated prefixes to exclude
 }
 
 type Repository struct {

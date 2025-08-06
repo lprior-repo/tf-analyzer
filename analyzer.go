@@ -144,11 +144,11 @@ func shouldSkipPath(path string) bool {
 
 	// Security: Skip cache and temporary directories
 	if strings.Contains(path, "/__pycache__/") || strings.HasPrefix(path, "__pycache__/") {
-
+		return true
 	}
 
 	if strings.Contains(path, "/tmp/") || strings.HasPrefix(path, "tmp/") {
-
+		return true
 	}
 
 	return false
